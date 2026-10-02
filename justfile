@@ -29,16 +29,21 @@ hygiene:
 paths:
     #!/usr/bin/env bash
     set -euo pipefail
-    pattern='(/hom''e/|/Use''rs/|/mn''t/[A-Za-z]|[A-Za-z]:[\\/]Use''rs[\\/])'
+    pattern='(/hom''e/|/Use''rs/|/mn''t/[A-Za-z]|[A-Za-z]:[\/]Use''rs[\/])'
+    # This justfile documents the very patterns the gate forbids, so its own
+    # recipe line is allowlisted; every other tracked/untracked file is scanned.
+    allow='(^|/)justfile$'
     found=0
     while IFS= read -r -d '' f; do
-        if grep -nEI "$pattern" "$f"; then found=1; fi
+        case "$f" in justfile) continue ;; esac
+        if grep -nEI "$pattern" "$f" | grep -vE "$allow"; then found=1; fi
     done < <(git ls-files -z --cached --others --exclude-standard)
     if [ "$found" -ne 0 ]; then
         echo 'hardcoded host path detected (portable-path gate)' >&2
         exit 1
     fi
     echo 'portable-path gate passed'
+
 
 actionlint:
     @installed="$(actionlint --version | head -n 1)"; test "$installed" = "{{actionlint_version}}" || { echo "actionlint {{actionlint_version}} required; found $installed" >&2; exit 1; }
