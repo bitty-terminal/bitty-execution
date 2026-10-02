@@ -1,0 +1,11 @@
+/target/
+.targets/
+**/target/
+.carryctx/config.local.toml
+.worktrees/
+recording/
+node_modules/
+dist/
+coverage/
+site/
+.trash/

@@ -1,0 +1,16 @@
+[repo]
+name = "bitty-execution"
+kind = "extension"
+lang = "rust"
+role = "candidate execution supervisor extension; metadata-only scaffold"
+owner = "bitty-core"
+docs = "bitty-terminal-docs"
+
+[bootstrap]
+version = "0.0.1"
+edition = "2024"
+rust_version = "1.85"
+status = "metadata-only"
+
+[contracts]
+status = "pending W-132 acceptance; no implemented API"

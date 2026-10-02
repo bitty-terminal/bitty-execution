@@ -1,0 +1,49 @@
+schema_version = 1
+
+[project]
+id = "01M3Y79QGEA4EFJYEGJMWPKFG6"
+name = "bitty-execution"
+task_prefix = "CTX"
+
+[git]
+main_branch = "main"
+branch_template = "carryctx/{task_id}-{slug}"
+
+[worktree.cleanup]
+on_task_completed = "when_idle"
+on_task_cancelled = "keep"
+require_clean = true
+require_no_active_session = true
+delete_branch = "when_removed"
+
+[session]
+stale_after = "2h"
+single_active_session_per_agent = true
+
+[task]
+single_active_task_per_agent = true
+strict_completion = false
+list_limit = 200
+
+[context]
+default_mode = "compact"
+max_events = 10
+lookback = "7d"
+include_git_status = true
+
+[checkpoint]
+require_before_session_end = true
+capture_diff_stats = true
+capture_untracked_files = true
+
+[output]
+color = "auto"
+unicode = true
+verbose = false
+
+[output.fields]
+
+[agent]
+
+[verification]
+commands = ["just check", "just workflows"]
