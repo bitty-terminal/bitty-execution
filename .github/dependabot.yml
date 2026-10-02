@@ -1,15 +1,8 @@
 version: 2
 updates:
-  - package-ecosystem: "cargo"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    commit-message:
-      prefix: "deps"
-    groups:
-      dependencies:
-        patterns:
-          - "*"
+  # The cargo ecosystem is intentionally omitted while this repository has no
+  # Cargo.toml: a cargo entry with no manifest fails the updater. Add the cargo
+  # block back in the same change that lands the manifest.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
