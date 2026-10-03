@@ -2,7 +2,7 @@
 name = "bitty-execution"
 kind = "extension"
 lang = "rust"
-role = "candidate execution supervisor extension; metadata-only scaffold"
+role = "execution supervisor extension; landed crate, independently verified"
 owner = "bitty-core"
 docs = "bitty-terminal-docs"
 
@@ -10,7 +10,7 @@ docs = "bitty-terminal-docs"
 version = "0.0.1"
 edition = "2024"
 rust_version = "1.85"
-status = "metadata-only"
+status = "landed"
 
 [contracts]
-status = "pending W-132 acceptance; no implemented API"
+status = "W-132 accepted; CTX-0002/0003/0004 complete; Core W-140 parity verified"

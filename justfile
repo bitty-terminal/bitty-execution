@@ -83,7 +83,8 @@ workflow-import:
     git fetch origin refs/heads/carryctx-snapshots:refs/remotes/origin/carryctx-snapshots
     carryctx import --from-git refs/remotes/origin/carryctx-snapshots
 
-# No source exists: fail rather than claim product verification.
+# Product gates: full Rust verification for the landed crate.
 product:
-    @echo 'Blocked: approved source and product gates have not landed.' >&2
-    @exit 1
+    cargo fmt --all -- --check
+    RUSTFLAGS="-D warnings" cargo clippy --workspace --all-targets
+    cargo test --workspace --locked

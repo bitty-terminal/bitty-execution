@@ -1,6 +1,6 @@
 # Execution repository guidance
 
-Metadata-only scaffold; no code migration is authorized. Canonical contracts: bitty-docs security corpus and bitty-terminal-docs execution-host-boundary. Read repo.toml, TODO and CarryCtx context first. Preserve PTY ownership, principal/generation fencing, cancellation, process-tree containment, OOM evidence and recovery. A separate crate is not process isolation.
+Execution supervisor extension crate (landed CTX-0003, independently verified CTX-0004). Canonical contracts: bitty-docs security corpus and bitty-terminal-docs execution-host-boundary. Read repo.toml, TODO and CarryCtx context first. Preserve PTY ownership, principal/generation fencing, cancellation, process-tree containment, OOM evidence and recovery. A separate crate is not process isolation.
 
 Use named CarryCtx sessions and exact scopes. CTX-0001 -> CTX-0002 -> CTX-0003 -> CTX-0004 orders bootstrap, contract readiness, implementation and independent verification. Bootstrap metadata acceptance is recorded (independent review, publication, redacted snapshot, branch protection). Narrow advisory scopes before implementation; after first commit use task-bound ctx-XXXX/type-slug branches and .worktrees/. Managed commit hooks must not be bypassed. No commit/push/release without task authority; only redacted snapshot refs may publish.
 
