@@ -1,0 +1,51 @@
+[package]
+name = "bitty-execution"
+description = "Execution supervisor extension for Bitty Correct Terminal"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bitty-terminal/bitty-execution"
+keywords = ["terminal", "runtime", "bitty"]
+categories = ["command-line-utilities"]
+publish = false
+
+[lib]
+name = "bitty_execution"
+path = "src/lib.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dependencies]
+# W-132 execution contract surface: argv/env validation and tracked-job
+# ceilings (`EnvPolicy`, `ExecutionRequest::validate`,
+# `MAX_TRACKED_EXECUTIONS`). Same exact rev the Core workspace uses.
+bitty-ipc = { git = "https://github.com/bitty-terminal/bitty-ipc", rev = "e9714e7" }
+# Owned-tree / PTY boundary (`TreeBackend`, `OwnedTree`, `Pty*`) and the role
+# sandbox gate (`AgentRole`, `SandboxDecl`) live in Core crates that stay in
+# the `bitty` repository; the extension depends on them one-way (Core never
+# depends back). Pinned to the audited `bitty` revision from the W-132
+# contract's implementation-status section.
+bitty-pty = { git = "https://github.com/bitty-terminal/bitty", rev = "5670d9ae", package = "bitty-pty" }
+bitty-plugin-host = { git = "https://github.com/bitty-terminal/bitty", rev = "5670d9ae", package = "bitty-plugin-host" }
+
+# CORE-RUN-003: the supervisor claim lock is an OS-held `flock`.
+# Same platform split as the Core workspace (no new crates).
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd", target_os = "dragonfly"))'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["fs"] }
+
+[dev-dependencies]
+# Hermetic live-PTY gating (`require_pty!`) for the moved suites.
+bitty-test-support = { git = "https://github.com/bitty-terminal/bitty", rev = "5670d9ae", package = "bitty-test-support" }
+
+# CTX-0903: Windows liveness probes for the owned-tree tests (safe API of
+# the first-party Job Object adapter; no new third-party crate).
+[target.'cfg(windows)'.dev-dependencies]
+bitty-winjob = { git = "https://github.com/bitty-terminal/bitty", rev = "5670d9ae", package = "bitty-winjob" }

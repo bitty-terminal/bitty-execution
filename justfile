@@ -29,10 +29,24 @@ hygiene:
 paths:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Mirrors Core check-scratch-paths.sh scoping: tests, fixtures, and docs
+    # examples are out of scope; unit-test regions (at/after the first
+    # #[cfg(test)] line) are out of scope; production code is gated.
     pattern='(/hom''e/|/Use''rs/|/mn''t/[A-Za-z]|[A-Za-z]:[\\/]Use''rs[\\/])'
     found=0
     while IFS= read -r -d '' f; do
-        if grep -nEI "$pattern" "$f"; then found=1; fi
+        case "$f" in
+            tests/*|*/fixtures/*|docs/*|*.md) continue ;;
+        esac
+        if [[ "$f" == *.rs ]] && grep -q '#\[cfg(test)\]' "$f"; then
+            # awk exits nonzero on a production-region hit (like grep); the
+            # printed matches are the evidence, `||` records the failure.
+            awk -v pat="$pattern" '
+                /#\[cfg\(test\)\]/ { exit (found ? 1 : 0) }
+                $0 ~ pat { print FILENAME ":" FNR ":" $0; found=1 }
+                END { exit (found ? 1 : 0) }
+            ' "$f" || found=1
+        elif grep -nEI "$pattern" "$f"; then found=1; fi
     done < <(git ls-files -z --cached --others --exclude-standard)
     if [ "$found" -ne 0 ]; then
         echo 'hardcoded host path detected (portable-path gate)' >&2
