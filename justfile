@@ -10,7 +10,7 @@ markdownlint:
     bunx --bun markdownlint-cli2@{{markdownlint_version}}
 
 metadata:
-    test -s README.md && test -s AGENTS.md && test -s TODO.md && test -s repo.toml
+    test -s README.md && test -s AGENTS.md && test -s repo.toml
     test -s .carryctx/config.toml
     python3 -c 'import tomllib; from pathlib import Path; [tomllib.loads(p.read_text()) for p in [Path("repo.toml"), Path(".carryctx/config.toml")]]'
 
