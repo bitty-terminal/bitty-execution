@@ -6,4 +6,4 @@ Read [AGENTS](AGENTS.md). Task management lives in CarryCtx. Prerequisite: W-132
 
 ## Delivery
 
-Local phases CTX-0001 -> CTX-0002 -> CTX-0003 -> CTX-0004 correspond to GitHub Issues #4 -> #3 -> #2 -> #1. CTX-0003 landed the supervisor mechanism with tests (PR #7, Closes #2) and CTX-0004 completed independent verification (Issue #1). Bootstrap (CTX-0001, Issue #4) and contract-readiness (CTX-0002, Issue #3) work is present; GitHub closeout is tracked in Issues #4 and #3.
+Local phases CTX-0001 -> CTX-0002 -> CTX-0003 -> CTX-0004 correspond to GitHub Issues #4 -> #3 -> #2 -> #1. CTX-0003 landed the supervisor mechanism with tests (PR #7, Closes #2) and CTX-0004 completed independent verification (Issue #1). Bootstrap (CTX-0001, Issue #4) is closed via PR #8; contract-readiness (CTX-0002, Issue #3) work is present and closes via this PR (retry of closed PR #9 after #4 landed).
