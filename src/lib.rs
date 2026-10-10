@@ -153,6 +153,7 @@ mod process_tree;
 mod registry;
 mod retention;
 mod sensitive_input;
+mod sidecar;
 mod supervisor;
 
 pub use cgroup::{CgroupUnavailable, JobCgroups, MAX_JOB_CGROUP_LEAVES, MAX_STALE_BASE_SWEEP};
@@ -195,6 +196,10 @@ pub use retention::{MAX_RETENTION_TTL, RetentionError, RetentionPolicy, Retentio
 pub use sensitive_input::{
     EchoState, InteractionClass, SecureInputDenial, automated_input_allowed, classify_with_verdict,
     may_capture,
+};
+pub use sidecar::{
+    SidecarCrashTracker, SidecarDeadlineStrikes, SidecarGate, SidecarIpcProtocol, SidecarPolicy,
+    SidecarStopOutcome, SidecarSupervisor,
 };
 pub use supervisor::{
     AdoptedJob, AdoptionKind, DaemonError, HandoffOffer, ScheduleDecision, SchedulePolicy,
