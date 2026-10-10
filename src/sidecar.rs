@@ -111,7 +111,7 @@
 //! socket, or reaps a foreign pid.
 //!
 //! | Core call site (at audit time) | Routes through |
-//! |---|
+//! |---|---|
 //! | `component/mod.rs` `COMPONENT_BACKOFF_INITIAL/MAX`, `COMPONENT_CRASH_LIMIT/WINDOW` | [`SidecarPolicy::core_defaults`] fields `backoff_initial`, `backoff_max`, `crash_limit`, `crash_window` |
 //! | `component/mod.rs` `COMPONENT_REQUEST_DEFAULT/MAX_TIMEOUT`, `COMPONENT_REQUEST_DEADLINE_GRACE`, `COMPONENT_DEADLINE_CRASH_THRESHOLD` | `request_default_timeout`, `request_max_timeout`, `deadline_grace`, `deadline_crash_threshold` |
 //! | `component/mod.rs` `COMPONENT_IDLE_TIMEOUT`, `COMPONENT_SHUTDOWN_GRACE`, `COMPONENT_HANDSHAKE_TIMEOUT`, `COMPONENT_MAX_IN_FLIGHT` | `idle_timeout`, `shutdown_grace`, `handshake_timeout`, `max_in_flight` |
