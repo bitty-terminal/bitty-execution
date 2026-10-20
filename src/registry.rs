@@ -13,6 +13,7 @@
 //! Linux/macOS, Job Objects on Windows) and reports
 //! [`KillScope::DirectChild`] where none does (CTX-0512, CTX-0903).
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
@@ -97,6 +98,40 @@ fn env_policy_is_sealed(policy: &EnvPolicy) -> bool {
 
 // ── registry ────────────────────────────────────────────────────────────────
 
+/// Host-owned preparation of the supervisor-built child command.
+///
+/// The supervisor constructs the argv-first, closed-environment
+/// [`std::process::Command`] itself. A host that must apply an inherited
+/// OS confinement (for example Core's Landlock exec ruleset) or another
+/// pre-spawn command configuration installs one preparer on the registry;
+/// it runs exactly once per pipe job, after the command is built and before
+/// `Command::spawn`.
+///
+/// The returned guard is held by the supervisor until after the spawn
+/// returns. That is the contract `pre_exec`-based confinement needs: the
+/// guard owns the ruleset descriptor the child hook captured, and dropping
+/// it before the fork would close the descriptor. A preparation error fails
+/// the job closed as [`ExecutionOutcome::SpawnFailed`](crate::ExecutionOutcome)
+/// with no process created.
+///
+/// PTY jobs do not use this hook: interactive PTY ownership and its
+/// environment inheritance stay with the accepted DEC-0017 terminal
+/// contract. The hook is host authority, never a plugin surface.
+pub trait SpawnPreparer: Send + Sync {
+    /// Applies host preparation to `command` before the supervisor spawns it.
+    ///
+    /// Returning `Err` refuses the spawn fail-closed and creates no process.
+    /// The returned guard stays alive across `Command::spawn`.
+    ///
+    /// # Errors
+    ///
+    /// Any host-defined refusal (unsupported platform, missing confinement
+    /// mechanism, invalid configuration) is returned as a bounded diagnostic
+    /// string.
+    fn prepare(&self, spec: &JobSpec, command: &mut Command)
+    -> Result<Box<dyn Any + Send>, String>;
+}
+
 /// Bounded in-memory registry of supervised jobs.
 ///
 /// Cheap to clone: every clone shares the same table, event queue, and
@@ -180,8 +215,22 @@ impl JobRegistry {
                 events: DeliveryLog::new(),
                 worker_spawner,
                 cgroups: CgroupSource::NotConfigured,
+                spawn_preparer: None,
             })),
         }
+    }
+
+    /// Installs the host-owned pre-spawn preparation hook.
+    ///
+    /// The preparer runs once per pipe job, after the supervisor builds the
+    /// closed-environment command and before it spawns. Its returned guard is
+    /// held across the spawn so `pre_exec`-based confinement descriptors stay
+    /// open. A preparation error fails the job closed; no process starts.
+    /// Cloneable registries share one preparer.
+    #[must_use]
+    pub fn with_spawn_preparer(self, preparer: Arc<dyn SpawnPreparer>) -> Self {
+        lock_inner(&self.shared).spawn_preparer = Some(preparer);
+        self
     }
 
     /// Why per-job cgroup accounting is unavailable, when it was requested
@@ -1347,6 +1396,8 @@ struct RegistryInner {
     worker_spawner: WorkerSpawner,
     /// Where per-job cgroup leaves come from (CTX-0880).
     cgroups: CgroupSource,
+    /// Host-owned pre-spawn preparation (confinement hooks); one per registry.
+    spawn_preparer: Option<Arc<dyn SpawnPreparer>>,
 }
 
 /// Starts one named worker thread for a job backend.
@@ -1774,13 +1825,18 @@ fn supervise(
     // `write_input_as` either finds it (PTY) or fails closed (pipes), never
     // a stale half from a previous job: ids are never reused.
     let stdin_writer_slot = stdin_slot_handle(&shared, id);
-    let (worker_spawner, cgroups, generation) = {
+    let (worker_spawner, cgroups, generation, spawn_preparer) = {
         let inner = lock_inner(&shared);
         let generation = inner
             .jobs
             .get(&id)
             .map_or(0, |record| record.generation.get());
-        (inner.worker_spawner, inner.cgroups.clone(), generation)
+        (
+            inner.worker_spawner,
+            inner.cgroups.clone(),
+            generation,
+            inner.spawn_preparer.clone(),
+        )
     };
     // The leaf exists and its starting counter is read before the spawn;
     // the backend moves the leader in right after it (CTX-0880).
@@ -1791,6 +1847,7 @@ fn supervise(
         output,
         stdin_writer_slot,
         worker_spawner,
+        spawn_preparer.as_deref(),
         &mut accounting,
     ) {
         Ok(backend) => backend,
@@ -2204,11 +2261,19 @@ impl Backend {
         output: OutputSink,
         stdin_writer_slot: Option<Arc<Mutex<Option<PtyStdinWriter>>>>,
         worker_spawner: WorkerSpawner,
+        spawn_preparer: Option<&dyn SpawnPreparer>,
         accounting: &mut JobAccounting,
     ) -> Result<Self, StartFailure> {
         match spec.io {
-            JobIo::Pipes => PipeJob::start_placed(spec, clock, output, worker_spawner, accounting)
-                .map(Self::Pipe),
+            JobIo::Pipes => PipeJob::start_placed(
+                spec,
+                clock,
+                output,
+                worker_spawner,
+                spawn_preparer,
+                accounting,
+            )
+            .map(Self::Pipe),
             JobIo::Pty => PtyJob::start_placed(
                 spec,
                 clock,
@@ -2350,7 +2415,7 @@ impl PipeJob {
         worker_spawner: WorkerSpawner,
     ) -> Result<Self, StartFailure> {
         let mut accounting = JobAccounting::prepare(CgroupSource::NotConfigured, 0, 0);
-        Self::start_placed(spec, clock, output, worker_spawner, &mut accounting)
+        Self::start_placed(spec, clock, output, worker_spawner, None, &mut accounting)
     }
 
     /// Starts the pipe job and moves the leader into the job's cgroup leaf
@@ -2361,12 +2426,26 @@ impl PipeJob {
         clock: Arc<ActivityClock>,
         output: OutputSink,
         worker_spawner: WorkerSpawner,
+        spawn_preparer: Option<&dyn SpawnPreparer>,
         accounting: &mut JobAccounting,
     ) -> Result<Self, StartFailure> {
         let mut command =
             closed_pipe_command(&spec.program, &spec.args, spec.cwd.as_deref(), &spec.env);
         OwnedTree::prepare_command(&mut command);
+        // Host preparation runs after the tree/stdio shape is fixed and
+        // before the fork. The guard owns any `pre_exec`-captured descriptor
+        // and must outlive `Command::spawn`; an error refuses the spawn
+        // fail-closed with no process created.
+        let prepared = match spawn_preparer {
+            Some(preparer) => Some(
+                preparer
+                    .prepare(spec, &mut command)
+                    .map_err(StartFailure::before_spawn)?,
+            ),
+            None => None,
+        };
         let mut child = command.spawn().map_err(StartFailure::before_spawn)?;
+        drop(prepared);
         let pid = child.id();
         // Placement only writes the pid into the cgroup leaf (Linux); a
         // Windows child is still suspended here, which placement ignores.

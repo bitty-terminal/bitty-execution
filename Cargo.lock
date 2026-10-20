@@ -82,24 +82,23 @@ dependencies = [
 [[package]]
 name = "bitty-ipc"
 version = "0.0.1"
-source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e9714e7#e9714e7f2a0ea243cdd2e209ed606a9bdc56fd7c"
+source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e6a2c0c#e6a2c0c2d23fefebc61ca300c14f5017d0c2f83f"
 dependencies = [
  "bitty-ipc-api",
  "bitty-ipc-auth",
  "bitty-ipc-core",
  "bitty-ipc-devtools",
- "bitty-ipc-mcp",
 ]
 
 [[package]]
 name = "bitty-ipc-api"
 version = "0.0.1"
-source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e9714e7#e9714e7f2a0ea243cdd2e209ed606a9bdc56fd7c"
+source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e6a2c0c#e6a2c0c2d23fefebc61ca300c14f5017d0c2f83f"
 
 [[package]]
 name = "bitty-ipc-auth"
 version = "0.0.1"
-source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e9714e7#e9714e7f2a0ea243cdd2e209ed606a9bdc56fd7c"
+source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e6a2c0c#e6a2c0c2d23fefebc61ca300c14f5017d0c2f83f"
 dependencies = [
  "bitty-ipc-api",
  "getrandom 0.4.3",
@@ -110,7 +109,7 @@ dependencies = [
 [[package]]
 name = "bitty-ipc-core"
 version = "0.0.1"
-source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e9714e7#e9714e7f2a0ea243cdd2e209ed606a9bdc56fd7c"
+source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e6a2c0c#e6a2c0c2d23fefebc61ca300c14f5017d0c2f83f"
 dependencies = [
  "bitty-ipc-api",
 ]
@@ -118,7 +117,7 @@ dependencies = [
 [[package]]
 name = "bitty-ipc-devtools"
 version = "0.0.1"
-source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e9714e7#e9714e7f2a0ea243cdd2e209ed606a9bdc56fd7c"
+source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e6a2c0c#e6a2c0c2d23fefebc61ca300c14f5017d0c2f83f"
 dependencies = [
  "base16ct",
  "bitty-ipc-api",
@@ -128,16 +127,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
-]
-
-[[package]]
-name = "bitty-ipc-mcp"
-version = "0.0.1"
-source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e9714e7#e9714e7f2a0ea243cdd2e209ed606a9bdc56fd7c"
-dependencies = [
- "bitty-ipc-api",
- "bitty-ipc-auth",
- "bitty-ipc-core",
 ]
 
 [[package]]
