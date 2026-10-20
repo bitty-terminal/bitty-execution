@@ -191,7 +191,7 @@ pub use persistence::{
     PERSIST_FORMAT_VERSION,
 };
 pub use process_tree::{KillScope, ProcessTreeBackend};
-pub use registry::{DEFAULT_MAX_JOBS, JobRegistry, MAX_STORED_JOB_EVENTS};
+pub use registry::{DEFAULT_MAX_JOBS, JobRegistry, MAX_STORED_JOB_EVENTS, SpawnPreparer};
 pub use retention::{MAX_RETENTION_TTL, RetentionError, RetentionPolicy, RetentionTier};
 pub use sensitive_input::{
     EchoState, InteractionClass, SecureInputDenial, automated_input_allowed, classify_with_verdict,

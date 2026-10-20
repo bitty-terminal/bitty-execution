@@ -4,6 +4,18 @@ Execution supervisor extension crate (landed CTX-0003 in PR #7, independently ve
 
 Read [AGENTS](AGENTS.md). Task management lives in CarryCtx. Prerequisite: W-132 / bitty-terminal-docs CTX-0088, Issue #171 (closed, contract accepted). Core retains PTY/process authority; principals, generations, cancellation, cgroups/OOM and recovery require approved contracts.
 
+## Host spawn preparation
+
+`JobRegistry::with_spawn_preparer` installs a host-owned `SpawnPreparer` that
+runs once per pipe job after the supervisor builds the argv-first,
+closed-environment command and before it spawns. The returned guard stays
+alive across `Command::spawn`, which is the contract `pre_exec`-based
+confinement needs; a preparation error fails the job closed as `SpawnFailed`
+with no process created. Core uses this seam to keep its Landlock exec
+confinement (CTX-1151) while the supervisor owns job identity and lifetime.
+PTY jobs are excluded: interactive PTY ownership stays with the terminal
+primitive.
+
 ## Delivery
 
 Local phases CTX-0001 -> CTX-0002 -> CTX-0003 -> CTX-0004 correspond to GitHub Issues #4 -> #3 -> #2 -> #1. CTX-0003 landed the supervisor mechanism with tests (PR #7, Closes #2) and CTX-0004 completed independent verification (Issue #1). Bootstrap (CTX-0001, Issue #4) is closed via PR #8; contract-readiness (CTX-0002, Issue #3) work is present and closes via this PR (retry of closed PR #9 after #4 landed).
