@@ -24,7 +24,7 @@ all = { level = "warn", priority = -1 }
 # W-132 execution contract surface: argv/env validation and tracked-job
 # ceilings (`EnvPolicy`, `ExecutionRequest::validate`,
 # `MAX_TRACKED_EXECUTIONS`). Same exact rev the Core workspace uses.
-bitty-ipc = { git = "https://github.com/bitty-terminal/bitty-ipc", rev = "e6a2c0c" }
+bitty-ipc = { git = "https://github.com/bitty-terminal/bitty-ipc", rev = "9493674" }
 # Owned-tree / PTY boundary (`TreeBackend`, `OwnedTree`, `Pty*`) and the role
 # sandbox gate (`AgentRole`, `SandboxDecl`) live in Core crates that stay in
 # the `bitty` repository; the extension depends on them one-way (Core never
