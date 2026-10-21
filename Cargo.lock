@@ -82,25 +82,27 @@ dependencies = [
 [[package]]
 name = "bitty-ipc"
 version = "0.0.1"
-source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e6a2c0c#e6a2c0c2d23fefebc61ca300c14f5017d0c2f83f"
+source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=9493674#949367413b0640fbea4b99c6dda9acff48c623d1"
 dependencies = [
  "bitty-ipc-api",
  "bitty-ipc-auth",
  "bitty-ipc-core",
  "bitty-ipc-devtools",
+ "bitty-ipc-winpipe",
 ]
 
 [[package]]
 name = "bitty-ipc-api"
 version = "0.0.1"
-source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e6a2c0c#e6a2c0c2d23fefebc61ca300c14f5017d0c2f83f"
+source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=9493674#949367413b0640fbea4b99c6dda9acff48c623d1"
 
 [[package]]
 name = "bitty-ipc-auth"
 version = "0.0.1"
-source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e6a2c0c#e6a2c0c2d23fefebc61ca300c14f5017d0c2f83f"
+source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=9493674#949367413b0640fbea4b99c6dda9acff48c623d1"
 dependencies = [
  "bitty-ipc-api",
+ "bitty-ipc-winpipe",
  "getrandom 0.4.3",
  "nix 0.31.3",
  "rustix",
@@ -109,7 +111,7 @@ dependencies = [
 [[package]]
 name = "bitty-ipc-core"
 version = "0.0.1"
-source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e6a2c0c#e6a2c0c2d23fefebc61ca300c14f5017d0c2f83f"
+source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=9493674#949367413b0640fbea4b99c6dda9acff48c623d1"
 dependencies = [
  "bitty-ipc-api",
 ]
@@ -117,16 +119,25 @@ dependencies = [
 [[package]]
 name = "bitty-ipc-devtools"
 version = "0.0.1"
-source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=e6a2c0c#e6a2c0c2d23fefebc61ca300c14f5017d0c2f83f"
+source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=9493674#949367413b0640fbea4b99c6dda9acff48c623d1"
 dependencies = [
  "base16ct",
  "bitty-ipc-api",
  "bitty-ipc-auth",
  "bitty-ipc-core",
+ "bitty-ipc-winpipe",
  "getrandom 0.4.3",
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "bitty-ipc-winpipe"
+version = "0.0.1"
+source = "git+https://github.com/bitty-terminal/bitty-ipc?rev=9493674#949367413b0640fbea4b99c6dda9acff48c623d1"
+dependencies = [
+ "windows-sys",
 ]
 
 [[package]]
