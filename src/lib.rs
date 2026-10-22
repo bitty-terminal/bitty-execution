@@ -139,6 +139,8 @@
 //!   (`specifications/run-20-detached-supervisor-trust-boundary.md`); no
 //!   daemon code, per the accepted headless/daemon decision.
 
+pub mod component;
+
 mod atomic_file;
 mod cgroup;
 mod claim_lock;
@@ -180,7 +182,7 @@ pub use outcome::{
 };
 pub use output::{
     MAX_OUTPUT_BYTES_PER_JOB, MAX_READ_BYTES, MAX_READ_LINES, OutputFilter, OutputIndex,
-    OutputStream, OutputView, ReadOutput,
+    OutputObserver, OutputStream, OutputView, ReadOutput,
 };
 pub use persistence::{
     CheckpointSummary, IdAllocator, JobStore, PersistError, PersistedJob, PersistedStore,

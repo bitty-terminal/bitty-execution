@@ -1,6 +1,6 @@
 [package]
 name = "bitty-execution"
-description = "Execution supervisor extension for Bitty Correct Terminal"
+description = "Execution supervisor extension for Bitty Correct Terminal (library + executable component)"
 version = "0.0.1"
 edition = "2024"
 rust-version = "1.85"
@@ -13,6 +13,10 @@ publish = false
 [lib]
 name = "bitty_execution"
 path = "src/lib.rs"
+
+[[bin]]
+name = "bitty-execution"
+path = "src/bin/bitty-execution.rs"
 
 [lints.rust]
 unsafe_code = "forbid"

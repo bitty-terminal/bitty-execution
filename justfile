@@ -14,6 +14,21 @@ metadata:
     test -s .carryctx/config.toml
     python3 -c 'import tomllib; from pathlib import Path; [tomllib.loads(p.read_text()) for p in [Path("repo.toml"), Path(".carryctx/config.toml")]]'
 
+component-metadata:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test -s bitty-component.toml
+    version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+    test -n "$version"
+    grep -Fx '[component]' bitty-component.toml >/dev/null
+    grep -Fx 'name = "execution"' bitty-component.toml >/dev/null
+    grep -Fx "version = \"$version\"" bitty-component.toml >/dev/null
+    grep -Fx 'protocol = [1, 1]' bitty-component.toml >/dev/null
+    grep -Fx 'executable = "bitty-execution"' bitty-component.toml >/dev/null
+    grep -Fx 'sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' bitty-component.toml >/dev/null
+    test -x scripts/package-component.sh
+    test -x scripts/test-package-component.sh
+
 hygiene:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -62,8 +77,17 @@ check:
     just fmt-check
     just markdownlint
     just metadata
+    just component-metadata
     just hygiene
     just paths
+
+# Build the Linux x86_64 executable component and pack its release archive.
+component-package:
+    ./scripts/package-component.sh --target x86_64-unknown-linux-gnu --output dist/x86_64-unknown-linux-gnu.tar.gz
+
+# Shape test for the packager (no cargo build, network, or R2).
+component-package-test:
+    ./scripts/test-package-component.sh
 
 workflows:
     actionlint

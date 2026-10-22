@@ -41,7 +41,9 @@ use crate::outcome::{
     CancelEffect, CancelMode, CancelOutcome, CancelReceipt, CancelRequest, DeadlineClock,
     ExecutionGeneration, ExecutionHandle, ExecutionOutcome, ExitObservation,
 };
-use crate::output::{OutputIndex, OutputSink, OutputStream, OutputView, ReadOutput};
+use crate::output::{
+    OutputIndex, OutputObserver, OutputSink, OutputStream, OutputView, ReadOutput,
+};
 use crate::process_tree::KillScope;
 use crate::sensitive_input::{EchoState, InteractionClass, automated_input_allowed};
 
@@ -216,6 +218,7 @@ impl JobRegistry {
                 worker_spawner,
                 cgroups: CgroupSource::NotConfigured,
                 spawn_preparer: None,
+                output_observer: None,
             })),
         }
     }
@@ -230,6 +233,19 @@ impl JobRegistry {
     #[must_use]
     pub fn with_spawn_preparer(self, preparer: Arc<dyn SpawnPreparer>) -> Self {
         lock_inner(&self.shared).spawn_preparer = Some(preparer);
+        self
+    }
+
+    /// Installs the host-owned output observer.
+    ///
+    /// Every job spawned after this call notifies the observer from its drain
+    /// thread, immediately after the chunk enters the bounded store. The
+    /// observer is host authority (the executable component uses it to stream
+    /// stdout/stderr frames); it never changes job state and cloneable
+    /// registries share one observer.
+    #[must_use]
+    pub fn with_output_observer(self, observer: Arc<dyn OutputObserver>) -> Self {
+        lock_inner(&self.shared).output_observer = Some(observer);
         self
     }
 
@@ -306,7 +322,7 @@ impl JobRegistry {
             let id = inner.allocate_id()?;
             let generation = inner.generation_for(id);
             let control = Arc::new(JobControl::new());
-            let output = OutputSink::default();
+            let output = inner.output_sink(id);
             inner.jobs.insert(
                 id,
                 JobRecord::unowned(
@@ -553,7 +569,7 @@ impl JobRegistry {
             let id = inner.allocate_id()?;
             let generation = inner.generation_for(id);
             let control = Arc::new(JobControl::new());
-            let output = OutputSink::default();
+            let output = inner.output_sink(id);
             inner.jobs.insert(
                 id,
                 JobRecord::owned(
@@ -1398,6 +1414,9 @@ struct RegistryInner {
     cgroups: CgroupSource,
     /// Host-owned pre-spawn preparation (confinement hooks); one per registry.
     spawn_preparer: Option<Arc<dyn SpawnPreparer>>,
+    /// Host-owned stream observer; one per registry. Every spawned job's
+    /// output store notifies it after each drained chunk.
+    output_observer: Option<Arc<dyn OutputObserver>>,
 }
 
 /// Starts one named worker thread for a job backend.
@@ -1437,6 +1456,15 @@ impl RegistryInner {
         let id = JobId::from_raw(self.next_id).ok_or_else(id_space_exhausted)?;
         self.next_id = self.next_id.checked_add(1).ok_or_else(id_space_exhausted)?;
         Ok(id)
+    }
+
+    /// Output sink for a freshly allocated job, carrying the registry's
+    /// observer when one is installed.
+    fn output_sink(&self, id: JobId) -> OutputSink {
+        match &self.output_observer {
+            Some(observer) => OutputSink::for_job(id, Arc::clone(observer)),
+            None => OutputSink::default(),
+        }
     }
 
     /// Removes finished records whose retention elapsed.
