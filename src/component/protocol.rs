@@ -48,9 +48,11 @@
 //! `job` is host-assigned and never reused for the component's lifetime. The
 //! host may therefore route frames before it has processed `Spawned`; the
 //! reply confirms acceptance and carries the execution generation used by
-//! `Terminate`. `request` ids are separate, non-zero, and identify one
-//! `ReadOutput` exchange. `Error.request == 0` marks a connection-level
-//! failure.
+//! `Terminate`. `ReadOutput` request ids are non-zero and have bit 63 clear.
+//! Job-correlated errors set bit 63 and carry the host job id in the remaining
+//! bits. `Error.request == 0` marks a connection-level failure. This keeps the
+//! v1 frame shape and negotiated version unchanged while making the two error
+//! correlation namespaces unambiguous.
 //!
 //! # Authority and capability boundary
 //!
@@ -160,6 +162,28 @@ pub const TAG_SHUTDOWN: u8 = 0x3F;
 
 /// Connection-level `Error` frame request id.
 pub const CONNECTION_ID: u64 = 0;
+
+/// Bit marking a job-correlated `Error.request` value.
+pub const JOB_ERROR_NAMESPACE_BIT: u64 = 1 << 63;
+
+/// Largest host job or read request id usable in the correlation namespace.
+pub const MAX_CORRELATION_ID: u64 = JOB_ERROR_NAMESPACE_BIT - 1;
+
+/// Encodes a host job id in the `Error.request` correlation namespace.
+#[must_use]
+pub const fn job_error_correlation(job: u64) -> u64 {
+    JOB_ERROR_NAMESPACE_BIT | job
+}
+
+/// Returns the host job id from a job-correlated `Error.request` value.
+#[must_use]
+pub const fn job_from_error_correlation(correlation: u64) -> Option<u64> {
+    if correlation & JOB_ERROR_NAMESPACE_BIT != 0 {
+        Some(correlation & MAX_CORRELATION_ID)
+    } else {
+        None
+    }
+}
 
 // ── closed wire vocabularies ─────────────────────────────────────────────────
 
@@ -1130,6 +1154,9 @@ pub fn encode_message(message: &Message) -> Result<Vec<u8>, WireError> {
             idle_ms,
             retention_ms,
         } => {
+            if *job > MAX_CORRELATION_ID {
+                return Err(WireError::InvalidField("job namespace"));
+            }
             encoder.u8(TAG_SPAWN);
             encoder.u64(*job)?;
             encoder.str_bounded(program, MAX_EXECUTABLE_BYTES, "program")?;
@@ -1149,6 +1176,9 @@ pub fn encode_message(message: &Message) -> Result<Vec<u8>, WireError> {
             mode,
             grace_ms,
         } => {
+            if *job > MAX_CORRELATION_ID {
+                return Err(WireError::InvalidField("job namespace"));
+            }
             encoder.u8(TAG_TERMINATE);
             encoder.u64(*job)?;
             encoder.u64(*generation)?;
@@ -1165,6 +1195,15 @@ pub fn encode_message(message: &Message) -> Result<Vec<u8>, WireError> {
             tail_lines,
             max_bytes,
         } => {
+            if *request == 0 || *job == 0 {
+                return Err(WireError::InvalidField("zero id"));
+            }
+            if *request & JOB_ERROR_NAMESPACE_BIT != 0 {
+                return Err(WireError::InvalidField("request namespace"));
+            }
+            if *job > MAX_CORRELATION_ID {
+                return Err(WireError::InvalidField("job namespace"));
+            }
             if *tail_lines > MAX_TAIL_LINES {
                 return Err(WireError::InvalidField("tail_lines"));
             }
@@ -1295,6 +1334,9 @@ pub fn decode_message(payload: &[u8]) -> Result<Message, WireError> {
         },
         TAG_SPAWN => {
             let job = decoder.id()?;
+            if job > MAX_CORRELATION_ID {
+                return Err(WireError::InvalidField("job namespace"));
+            }
             let program = decoder.str_bounded(MAX_EXECUTABLE_BYTES, "program")?;
             if program.is_empty() {
                 return Err(WireError::InvalidField("program"));
@@ -1325,6 +1367,9 @@ pub fn decode_message(payload: &[u8]) -> Result<Message, WireError> {
         }
         TAG_TERMINATE => {
             let job = decoder.id()?;
+            if job > MAX_CORRELATION_ID {
+                return Err(WireError::InvalidField("job namespace"));
+            }
             let generation = decoder.id()?;
             let mode_code = decoder.u8()?;
             let mode = TerminateMode::from_code(mode_code)
@@ -1342,7 +1387,13 @@ pub fn decode_message(payload: &[u8]) -> Result<Message, WireError> {
         }
         TAG_READ_OUTPUT => {
             let request = decoder.id()?;
+            if request & JOB_ERROR_NAMESPACE_BIT != 0 {
+                return Err(WireError::InvalidField("request namespace"));
+            }
             let job = decoder.id()?;
+            if job > MAX_CORRELATION_ID {
+                return Err(WireError::InvalidField("job namespace"));
+            }
             let stream_code = decoder.u8()?;
             let stream = Stream::from_code(stream_code).ok_or(WireError::InvalidField("stream"))?;
             let tail_lines = decoder.u32()?;
@@ -1959,7 +2010,7 @@ mod tests {
     fn zero_ids_and_bad_enums_are_rejected() {
         let spawn = spawn();
         let mut encoded = encode_message(&spawn).unwrap();
-        // job id sits immediately after the tag in Spawn.
+        // Job id sits immediately after the tag in Spawn.
         encoded[1..9].copy_from_slice(&0u64.to_be_bytes());
         assert_eq!(
             decode_message(&encoded),
@@ -1986,6 +2037,14 @@ mod tests {
             decode_message(&terminate),
             Err(WireError::InvalidField("terminate mode"))
         );
+    }
+
+    #[test]
+    fn handshake_negotiates_only_protocol_v1() {
+        assert_eq!(negotiate(1, 1), Some(1));
+        assert_eq!(negotiate(0, 1), Some(1));
+        assert_eq!(negotiate(3, 9), None);
+        assert_eq!(negotiate(2, 9), None);
     }
 
     #[test]

@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use bitty_execution::component::protocol::{
     ErrorKind, ExitKind, FrameReader, MAX_FRAME_BYTES, Message, PROTOCOL_VERSION, Stream,
     TerminateMode, TerminateOutcome, WireCancelEffect, WireDeadlineClock, WireEnv, WireEnvVar,
-    WireKillScope, WireOomGap, WireOomVerdict, write_frame,
+    WireKillScope, WireOomGap, WireOomVerdict, job_error_correlation, write_frame,
 };
 use bitty_execution::component::server::{
     COMPONENT_VERSION, SERVER_EXIT_INTERNAL, SERVER_EXIT_OK, SERVER_EXIT_PROTOCOL,
@@ -83,7 +83,7 @@ fn shell(script: &str) -> (String, Vec<String>) {
 /// One spawned component process plus its decoded message stream.
 struct Component {
     child: Child,
-    stdin: std::process::ChildStdin,
+    stdin: Option<std::process::ChildStdin>,
     messages: Receiver<Result<Message, String>>,
     exited: bool,
 }
@@ -123,7 +123,7 @@ impl Component {
             .expect("reader thread");
         let mut component = Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             messages,
             exited: false,
         };
@@ -153,13 +153,19 @@ impl Component {
     }
 
     fn send(&mut self, message: &Message) {
-        write_frame(&mut self.stdin, message).expect("write frame");
-        self.stdin.flush().expect("flush frame");
+        let stdin = self.stdin.as_mut().expect("component stdin open");
+        write_frame(stdin, message).expect("write frame");
+        stdin.flush().expect("flush frame");
     }
 
     fn send_raw(&mut self, bytes: &[u8]) {
-        self.stdin.write_all(bytes).expect("write raw");
-        self.stdin.flush().expect("flush raw");
+        let stdin = self.stdin.as_mut().expect("component stdin open");
+        stdin.write_all(bytes).expect("write raw");
+        stdin.flush().expect("flush raw");
+    }
+
+    fn close_stdin(&mut self) {
+        drop(self.stdin.take());
     }
 
     fn recv(&self) -> Message {
@@ -483,7 +489,7 @@ fn unknown_job_and_stale_generation_are_typed_errors() {
             kind,
             message,
         } => {
-            assert_eq!(request, 99);
+            assert_eq!(request, job_error_correlation(99));
             assert_eq!(kind, ErrorKind::UnknownJob);
             assert_eq!(message, "unknown job");
         }
@@ -652,10 +658,13 @@ fn interactive_pty_jobs_are_refused() {
     });
     match component.recv() {
         Message::Error {
-            request: 10,
+            request,
             kind: ErrorKind::Unsupported,
             message,
-        } => assert_eq!(message, "interactive pty jobs are host-owned"),
+        } => {
+            assert_eq!(request, job_error_correlation(10));
+            assert_eq!(message, "interactive pty jobs are host-owned");
+        }
         other => panic!("expected unsupported Error, got {other:?}"),
     }
     component.shutdown();
@@ -663,10 +672,126 @@ fn interactive_pty_jobs_are_refused() {
 
 #[test]
 fn job_slots_are_bounded_by_the_shared_ceiling() {
-    // The registry itself is covered by its own suites; here the protocol
-    // constant is pinned to the shared ceiling and the component starts.
-    let component = Component::start();
+    let mut component = Component::start();
+    let (program, args) = shell("exec /usr/bin/sleep 30");
+    for job in 1..=bitty_execution::component::protocol::MAX_JOBS as u64 {
+        component.send(&spawn_message(
+            job,
+            program.clone(),
+            args.clone(),
+            WireEnv::Isolated,
+            0,
+        ));
+        let frames = component.recv_until(
+            "Spawned",
+            |message| matches!(message, Message::Spawned { job: got, .. } if *got == job),
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|message| matches!(message, Message::Spawned { job: got, .. } if *got == job))
+        );
+    }
+    component.send(&spawn_message(
+        bitty_execution::component::protocol::MAX_JOBS as u64 + 1,
+        program,
+        args,
+        WireEnv::Isolated,
+        0,
+    ));
+    let capacity_error = component.recv_until("capacity error", |message| {
+        matches!(
+            message,
+            Message::Error {
+                request,
+                kind: ErrorKind::Budget,
+                ..
+            } if *request == job_error_correlation(
+                bitty_execution::component::protocol::MAX_JOBS as u64 + 1,
+            )
+        )
+    });
+    assert!(capacity_error.iter().any(|message| matches!(
+        message,
+        Message::Error { request, kind: ErrorKind::Budget, .. }
+            if *request == job_error_correlation(
+                bitty_execution::component::protocol::MAX_JOBS as u64 + 1,
+            )
+    )));
+    component.send(&Message::Shutdown);
+    while !matches!(component.recv(), Message::ShutdownAck) {}
+    let status = component.child.wait().expect("wait for component");
+    component.exited = true;
+    assert_eq!(status.code(), Some(i32::from(SERVER_EXIT_OK)));
+}
+
+#[test]
+fn fast_job_events_are_never_lost_across_gate_registration() {
+    let mut component = Component::start();
+    for job in 1..=48 {
+        let (program, args) = if job % 2 == 0 {
+            shell("printf fast; exit 0")
+        } else {
+            ("/bitty-does-not-exist".to_owned(), Vec::new())
+        };
+        component.send(&spawn_message(job, program, args, WireEnv::Isolated, 0));
+        let frames = component.recv_until(
+            "fast Exit",
+            |message| matches!(message, Message::Exit { job: seen, .. } if *seen == job),
+        );
+        assert!(matches!(frames.first(), Some(Message::Spawned { job: seen, .. }) if *seen == job));
+        if job % 2 == 0 {
+            assert!(frames.iter().any(|message| matches!(message, Message::Output { job: seen, data, .. } if *seen == job && data == b"fast")));
+        }
+        assert!(matches!(exit_of(&frames, job), Message::Exit { job: seen, .. } if *seen == job));
+    }
     component.shutdown();
+}
+
+#[test]
+fn malformed_frames_are_rejected_by_the_live_component() {
+    let cases: &[(&str, &[u8], &str)] = &[
+        ("zero length", &[0, 0, 0, 0], "invalid protocol frame"),
+        ("truncated header", &[0, 0], "invalid protocol frame"),
+        ("truncated payload", &[0, 0, 0, 1], "invalid protocol frame"),
+        (
+            "trailing byte",
+            &[0, 0, 0, 10, 0x21, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+            "invalid protocol frame",
+        ),
+        ("unknown tag", &[0, 0, 0, 1, 0x7f], "invalid protocol frame"),
+    ];
+    for (name, bytes, expected) in cases {
+        let mut component = Component::start();
+        component.send_raw(bytes);
+        component.close_stdin();
+        match component.recv() {
+            Message::Error {
+                request: 0,
+                kind: ErrorKind::Protocol,
+                message,
+            } => {
+                assert_eq!(&message, expected, "case {name}");
+            }
+            other => panic!("case {name}: expected connection protocol error, got {other:?}"),
+        }
+        let status = component.child.wait().expect("wait for component");
+        component.exited = true;
+        assert_eq!(
+            status.code(),
+            Some(i32::from(SERVER_EXIT_PROTOCOL)),
+            "case {name}"
+        );
+    }
+}
+
+#[test]
+fn clean_eof_after_handshake_is_a_clean_shutdown() {
+    let mut component = Component::start();
+    component.close_stdin();
+    let status = component.child.wait().expect("wait for component");
+    component.exited = true;
+    assert_eq!(status.code(), Some(i32::from(SERVER_EXIT_OK)));
 }
 
 #[test]

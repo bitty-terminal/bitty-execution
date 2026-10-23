@@ -39,6 +39,13 @@ cap is 256 KiB and is checked from the four-byte header before any payload
 read or allocation. Tags are fixed; unknown tags and trailing bytes fail
 closed.
 
+`Error.request` has a single v1 correlation contract: `0` is a
+connection-level error, a high-bit-set value is a job error and carries the job
+id in its remaining bits, and a high-bit-clear non-zero value is a
+`ReadOutput` request id. The `job` field remains the stable host job id used
+for lifecycle frames. This preserves the v1 frame shape and negotiated
+version; the Core host must decode the namespace before routing an error.
+
 | Tag    | Message       | Direction | Fields                                                                                                                                            |
 | ------ | ------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `0x01` | `Hello`       | host→comp | `min:u16 max:u16 component:str version:str`                                                                                                       |
@@ -125,9 +132,10 @@ release binary.
   the streamed SHA-256, and spawn the binary from its version directory.
 - Own the handshake deadline, request ids, per-request deadlines, capability
   grants, consent, and safe-mode denial (none live in this component).
-- Treat `Error`/EOF/exit-3 as `component_lost`, fail in-flight work, restart
-  with the existing backoff policy, and place the component in its own
-  process group/session so a component crash can be cleaned up by killing the
+- Treat `Error { request: 0 }`/EOF/exit-3 as `component_lost`; request-level
+  `Error` frames fail only the identified request. On connection loss, fail
+  in-flight work and restart with the existing backoff policy. Place the
+  component in its own process group/session so a component crash can be cleaned up by killing the
   group. A crashed component cannot kill the host, but its live jobs can
   outlive it until the host reaps the group.
 - Run parity tests against the linked crate and remove the direct

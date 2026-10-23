@@ -47,7 +47,7 @@ use super::protocol::{
     CONNECTION_ID, ErrorKind, ExitKind, FrameReader, MAX_CLOSED_JOB_RECORDS, MAX_JOBS,
     MAX_OUTPUT_CHUNK_BYTES, MAX_OUTPUT_READ_BYTES, Message, Stream, TerminateMode,
     TerminateOutcome, WireCancelEffect, WireDeadlineClock, WireEnv, WireKillScope, WireOomGap,
-    WireOomVerdict, negotiate,
+    WireOomVerdict, job_error_correlation, negotiate,
 };
 use crate::delivery::MAX_EVENT_REPLAY;
 use crate::model::{JobEvent, JobId, JobIo, JobKind, JobLifetime, JobSpec, JobState, JobTimeouts};
@@ -311,7 +311,12 @@ fn handle_spawn<W: Write>(
 ) {
     active.prune_gone(registry);
     if active.contains(job) {
-        write_request_error(writer, job, ErrorKind::InvalidRequest, ERR_REQUEST_REJECTED);
+        write_request_error(
+            writer,
+            job_error_correlation(job),
+            ErrorKind::InvalidRequest,
+            ERR_REQUEST_REJECTED,
+        );
         return;
     }
     let spec = match build_spec(
@@ -328,15 +333,19 @@ fn handle_spawn<W: Write>(
     ) {
         Ok(spec) => spec,
         Err((kind, message)) => {
-            write_request_error(writer, job, kind, message);
+            write_request_error(writer, job_error_correlation(job), kind, message);
             return;
         }
     };
-    let record = match registry.spawn(spec) {
+    let record = match registry.spawn_with_hooks(
+        spec,
+        |record| gates.insert(record.get(), job),
+        |record| gates.remove(record.get()),
+    ) {
         Ok(record) => record,
         Err(error) => {
             let (kind, message) = spawn_error(&error);
-            write_request_error(writer, job, kind, message);
+            write_request_error(writer, job_error_correlation(job), kind, message);
             return;
         }
     };
@@ -344,14 +353,19 @@ fn handle_spawn<W: Write>(
         Ok(snapshot) => snapshot.generation,
         Err(_) => {
             let _ = registry.cancel(record);
-            write_request_error(writer, job, ErrorKind::Internal, ERR_INTERNAL);
+            gates.remove(record.get());
+            write_request_error(
+                writer,
+                job_error_correlation(job),
+                ErrorKind::Internal,
+                ERR_INTERNAL,
+            );
             return;
         }
     };
 
     // Gate output/exit frames until the reply carrying the generation is on
     // the wire. The drain threads block here, never the main reader.
-    gates.insert(record.get(), job);
     // Insert the mapping before releasing the drain gate: the monitor can
     // otherwise observe a fast job's `Exit` before the mapping exists and
     // never mark it exited.
@@ -372,6 +386,7 @@ fn handle_spawn<W: Write>(
     gates.publish(record.get());
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_terminate<W: Write>(
     writer: &FrameWriter<W>,
     registry: &JobRegistry,
@@ -382,11 +397,21 @@ fn handle_terminate<W: Write>(
     grace_ms: u32,
 ) {
     let Some(entry) = active.get(job) else {
-        write_request_error(writer, job, ErrorKind::UnknownJob, ERR_UNKNOWN_JOB);
+        write_request_error(
+            writer,
+            job_error_correlation(job),
+            ErrorKind::UnknownJob,
+            ERR_UNKNOWN_JOB,
+        );
         return;
     };
     let Some(generation) = ExecutionGeneration::from_raw(generation) else {
-        write_request_error(writer, job, ErrorKind::InvalidRequest, ERR_REQUEST_REJECTED);
+        write_request_error(
+            writer,
+            job_error_correlation(job),
+            ErrorKind::InvalidRequest,
+            ERR_REQUEST_REJECTED,
+        );
         return;
     };
     let handle = ExecutionHandle {
@@ -401,7 +426,7 @@ fn handle_terminate<W: Write>(
         Ok(request) => request,
         Err(error) => {
             let (kind, message) = request_error(&error);
-            write_request_error(writer, job, kind, message);
+            write_request_error(writer, job_error_correlation(job), kind, message);
             return;
         }
     };
@@ -415,7 +440,7 @@ fn handle_terminate<W: Write>(
         }
         Err(error) => {
             let (kind, message) = request_error(&error);
-            write_request_error(writer, job, kind, message);
+            write_request_error(writer, job_error_correlation(job), kind, message);
         }
     }
 }
@@ -1212,5 +1237,24 @@ mod tests {
         assert_eq!(state.order.len(), MAX_CLOSED_JOB_RECORDS);
         assert!(!state.closed.contains(&0), "oldest marker was evicted");
         assert!(state.closed.contains(&(MAX_CLOSED_JOB_RECORDS as u64 + 7)));
+    }
+
+    #[test]
+    fn supervisor_cannot_start_before_its_gate_is_registered() {
+        let gates = JobGates::new();
+        let registry = JobRegistry::new();
+        let spec = JobSpec::new("/bin/true", Vec::new());
+        let job = registry
+            .spawn_with_hooks(
+                spec,
+                |record| {
+                    gates.insert(record.get(), 17);
+                    gates.publish(record.get());
+                },
+                |record| gates.remove(record.get()),
+            )
+            .expect("spawn succeeds");
+        assert_eq!(gates.resolve(job.get()), Some(17));
+        let _ = registry.cancel(job);
     }
 }

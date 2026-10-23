@@ -310,6 +310,38 @@ impl JobRegistry {
     /// process and no thread is started), and [`JobError::Unavailable`] when
     /// the supervisor thread cannot be created (the record is removed again).
     pub fn spawn(&self, spec: JobSpec) -> Result<JobId, JobError> {
+        self.spawn_with_hooks(spec, |_| {}, |_| {})
+    }
+
+    /// Spawns one unowned job and invokes `before_start` after allocating its
+    /// record but before starting the supervisor thread.
+    ///
+    /// The hook runs outside the registry lock so adapters can publish their
+    /// own state without blocking registry operations. It is never called for
+    /// invalid or over-capacity requests.
+    pub fn spawn_with_hook<F>(&self, spec: JobSpec, before_start: F) -> Result<JobId, JobError>
+    where
+        F: FnOnce(JobId),
+    {
+        self.spawn_with_hooks(spec, before_start, |_| {})
+    }
+
+    /// Spawns one unowned job with publication hooks around supervisor start.
+    ///
+    /// `before_start` runs after the registry record is allocated and before
+    /// the supervisor thread starts. `on_start_failure` runs if that thread
+    /// cannot be created, allowing an adapter to remove a reservation made by
+    /// `before_start`. Both hooks run outside the registry lock.
+    pub fn spawn_with_hooks<F, C>(
+        &self,
+        spec: JobSpec,
+        before_start: F,
+        on_start_failure: C,
+    ) -> Result<JobId, JobError>
+    where
+        F: FnOnce(JobId),
+        C: FnOnce(JobId),
+    {
         spec.validate()?;
         let (id, control, output) = {
             let mut inner = lock_inner(&self.shared);
@@ -335,11 +367,13 @@ impl JobRegistry {
             );
             (id, control, output)
         };
+        before_start(id);
         let shared = Arc::clone(&self.shared);
         thread::Builder::new()
             .name(format!("bitty-job-{}", id.get()))
             .spawn(move || supervise(shared, id, spec, control, output))
             .map_err(|error| {
+                on_start_failure(id);
                 let mut inner = lock_inner(&self.shared);
                 inner.jobs.remove(&id);
                 JobError::Unavailable {
