@@ -3,7 +3,7 @@
 //! The crate still exposes the in-process [`JobRegistry`](crate::JobRegistry)
 //! for Core's linked use; this module adds the installable form required by
 //! the component split (bitty#2494): a validated `bitty-component.toml`, a
-//! bounded v1 stdio wire protocol, and a server binary wrapping the same
+//! bounded v2 stdio wire protocol, and a server binary wrapping the same
 //! supervisor. It carries no installer, no download source, no capability
 //! policy, and no platform packaging logic beyond the repository script.
 //!

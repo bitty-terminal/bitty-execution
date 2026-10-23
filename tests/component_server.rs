@@ -276,6 +276,44 @@ fn handshake_then_shutdown_is_clean() {
 }
 
 #[test]
+fn v1_only_host_is_refused_before_work_is_accepted() {
+    let binary: std::path::PathBuf = std::env::var_os("BITTY_EXECUTION_COMPONENT_BIN")
+        .map_or_else(|| env!("CARGO_BIN_EXE_bitty-execution").into(), Into::into);
+    let mut child = Command::new(binary)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn bitty-execution");
+    let mut stdin = child.stdin.take().expect("component stdin");
+    let stdout = child.stdout.take().expect("component stdout");
+    write_frame(
+        &mut stdin,
+        &Message::Hello {
+            min: 1,
+            max: 1,
+            component: "execution".to_owned(),
+            version: "v1-host".to_owned(),
+        },
+    )
+    .expect("write v1 handshake");
+    stdin.flush().expect("flush v1 handshake");
+    let mut reader = FrameReader::new(BufReader::new(stdout));
+    assert_eq!(
+        reader.read_message().expect("read refusal"),
+        Some(Message::Error {
+            request: 0,
+            kind: ErrorKind::Protocol,
+            message: "protocol version unsupported".to_owned(),
+        })
+    );
+    assert_eq!(
+        child.wait().expect("wait for refused component").code(),
+        Some(i32::from(SERVER_EXIT_PROTOCOL))
+    );
+}
+
+#[test]
 fn real_command_lifecycle_reports_output_and_exit_status() {
     let mut component = Component::start();
     let (program, args) = shell("printf out; printf err >&2; exit 7");

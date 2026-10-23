@@ -23,7 +23,7 @@ component-metadata:
     grep -Fx '[component]' bitty-component.toml >/dev/null
     grep -Fx 'name = "execution"' bitty-component.toml >/dev/null
     grep -Fx "version = \"$version\"" bitty-component.toml >/dev/null
-    grep -Fx 'protocol = [1, 1]' bitty-component.toml >/dev/null
+    grep -Fx 'protocol = [2, 2]' bitty-component.toml >/dev/null
     grep -Fx 'executable = "bitty-execution"' bitty-component.toml >/dev/null
     grep -Fx 'sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' bitty-component.toml >/dev/null
     test -x scripts/package-component.sh

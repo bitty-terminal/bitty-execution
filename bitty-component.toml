@@ -11,6 +11,6 @@
 [component]
 name = "execution"
 version = "0.0.1"
-protocol = [1, 1]
+protocol = [2, 2]
 executable = "bitty-execution"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

@@ -1,4 +1,4 @@
-//! Execution component wire protocol v1 (core host <-> `bitty-execution`).
+//! Execution component wire protocol v2 (core host <-> `bitty-execution`).
 //!
 //! The component is a stdio coprocess: the host writes requests to its stdin
 //! and reads framed messages from its stdout. stderr stays diagnostic and is
@@ -51,8 +51,11 @@
 //! `Terminate`. `ReadOutput` request ids are non-zero and have bit 63 clear.
 //! Job-correlated errors set bit 63 and carry the host job id in the remaining
 //! bits. `Error.request == 0` marks a connection-level failure. This keeps the
-//! v1 frame shape and negotiated version unchanged while making the two error
-//! correlation namespaces unambiguous.
+//! v2 intentionally reserves the high bit for job-correlated errors. A v1
+//! host must not connect to this component: the handshake range is v2 only,
+//! so it receives a protocol error and the component exits before accepting
+//! work. This prevents a v1 host from interpreting a job error as a request
+//! error.
 //!
 //! # Authority and capability boundary
 //!
@@ -66,7 +69,7 @@
 //! never widens it.
 //!
 //! `SpawnIo::Pty` and `SpawnKind::Interactive` are reserved codes: protocol
-//! v1 has no stdin channel, so servers refuse them as unsupported and
+//! v2 has no stdin channel, so servers refuse them as unsupported and
 //! interactive PTY ownership stays with the terminal primitive.
 //!
 //! # Bounds
@@ -89,7 +92,7 @@ use bitty_ipc::execution::{
 };
 
 /// Wire protocol version implemented by this crate.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Size of the big-endian `u32` length prefix in front of every payload.
 pub const FRAME_HEADER_BYTES: usize = 4;
@@ -786,7 +789,7 @@ impl TerminateOutcome {
 
 // ── messages ────────────────────────────────────────────────────────────────
 
-/// One protocol v1 message.
+/// One protocol v2 message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
     /// Handshake offer; must be the first frame (host -> component).
@@ -991,7 +994,7 @@ pub enum WireError {
     Truncated,
     /// A frame carried bytes after the last field.
     TrailingBytes,
-    /// The tag is not assigned in protocol v1.
+    /// The tag is not assigned in protocol v2.
     UnknownTag(u8),
     /// A string field is not UTF-8.
     InvalidUtf8,
@@ -1870,8 +1873,8 @@ mod tests {
 
     fn hello() -> Message {
         Message::Hello {
-            min: 1,
-            max: 1,
+            min: 2,
+            max: 2,
             component: "execution".to_owned(),
             version: "0.0.1".to_owned(),
         }
@@ -1917,7 +1920,7 @@ mod tests {
     fn every_message_roundtrips() {
         roundtrip(hello());
         roundtrip(Message::HelloAck {
-            protocol: 1,
+            protocol: 2,
             component: "execution".to_owned(),
             version: "0.0.1".to_owned(),
         });
@@ -2040,11 +2043,13 @@ mod tests {
     }
 
     #[test]
-    fn handshake_negotiates_only_protocol_v1() {
-        assert_eq!(negotiate(1, 1), Some(1));
-        assert_eq!(negotiate(0, 1), Some(1));
+    fn handshake_negotiates_only_protocol_v2() {
+        assert_eq!(negotiate(2, 2), Some(2));
+        assert_eq!(negotiate(1, 2), Some(2));
+        assert_eq!(negotiate(2, 9), Some(2));
+        assert_eq!(negotiate(1, 1), None);
+        assert_eq!(negotiate(0, 1), None);
         assert_eq!(negotiate(3, 9), None);
-        assert_eq!(negotiate(2, 9), None);
     }
 
     #[test]
@@ -2098,10 +2103,10 @@ mod tests {
 
     #[test]
     fn handshake_negotiation_is_exact() {
-        assert_eq!(negotiate(1, 1), Some(1));
-        assert_eq!(negotiate(0, 1), Some(1));
-        assert_eq!(negotiate(1, 9), Some(1));
-        assert_eq!(negotiate(2, 9), None);
+        assert_eq!(negotiate(2, 2), Some(2));
+        assert_eq!(negotiate(1, 2), Some(2));
+        assert_eq!(negotiate(2, 9), Some(2));
+        assert_eq!(negotiate(1, 1), None);
         assert_eq!(negotiate(2, 1), None);
     }
 

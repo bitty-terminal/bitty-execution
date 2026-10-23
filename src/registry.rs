@@ -2416,8 +2416,11 @@ impl Backend {
 /// supervisor. Bytes drained so far stay in the store either way.
 const DRAIN_JOIN_BOUND: Duration = Duration::from_secs(5);
 
-/// Joins finished drains within [`DRAIN_JOIN_BOUND`]; unfinished ones are
-/// detached and keep their bounded store clone until EOF.
+/// Joins finished drains within [`DRAIN_JOIN_BOUND`]. Unfinished drains are
+/// detached and keep their bounded store clone until EOF. The registry cannot
+/// forcibly close a pipe owned by a descendant that escaped the adopted tree,
+/// so callers must treat the detached thread and its pipe as a resource
+/// lifetime risk after the bound expires.
 fn join_drains(drains: &mut Vec<thread::JoinHandle<()>>) {
     let deadline = Instant::now().checked_add(DRAIN_JOIN_BOUND);
     while !drains.iter().all(thread::JoinHandle::is_finished) {

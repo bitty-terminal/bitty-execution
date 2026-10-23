@@ -48,7 +48,7 @@ for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
 	tar -xzf "$archive" -C "$extract"
 	grep -Fx 'name = "execution"' "$extract/bitty-component.toml" >/dev/null
 	grep -Fx "version = \"$version\"" "$extract/bitty-component.toml" >/dev/null
-	grep -Fx 'protocol = [1, 1]' "$extract/bitty-component.toml" >/dev/null
+	grep -Fx 'protocol = [2, 2]' "$extract/bitty-component.toml" >/dev/null
 	grep -Fx 'executable = "bitty-execution"' "$extract/bitty-component.toml" >/dev/null
 	digest="$(sha256sum "$extract/bitty-execution" | awk '{print $1}')"
 	grep -Fx "sha256 = \"$digest\"" "$extract/bitty-component.toml" >/dev/null

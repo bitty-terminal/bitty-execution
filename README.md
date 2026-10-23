@@ -20,7 +20,7 @@ library; it carries no installer, no download source, no capability policy,
 and no platform discovery.
 
 - Descriptor: [`bitty-component.toml`](bitty-component.toml) — name
-  `execution`, version `0.0.1`, protocol `[1, 1]`, executable
+  `execution`, version `0.0.1`, protocol `[2, 2]`, executable
   `bitty-execution`.
 - Parser: `bitty_execution::component::descriptor` — closed `[component]`
   table, strict `X.Y.Z`, `[a-z][a-z0-9-]{0,31}` name, `bitty-<name>`
@@ -31,7 +31,7 @@ and no platform discovery.
 - Binary: `bitty-execution` (no arguments serves; `--version`;
   `--check-manifest PATH`).
 
-### Wire protocol v1
+### Wire protocol v2
 
 `frame = length:u32be payload[length]`, `payload = tag:u8 fields...`; integers
 are big-endian, strings/bytes/list lengths are `u32be` and bounded. The frame
@@ -39,12 +39,14 @@ cap is 256 KiB and is checked from the four-byte header before any payload
 read or allocation. Tags are fixed; unknown tags and trailing bytes fail
 closed.
 
-`Error.request` has a single v1 correlation contract: `0` is a
+`Error.request` has a v2 correlation contract: `0` is a
 connection-level error, a high-bit-set value is a job error and carries the job
 id in its remaining bits, and a high-bit-clear non-zero value is a
 `ReadOutput` request id. The `job` field remains the stable host job id used
-for lifecycle frames. This preserves the v1 frame shape and negotiated
-version; the Core host must decode the namespace before routing an error.
+for lifecycle frames. This high-bit namespace is a semantic change from v1;
+the descriptor and handshake therefore advertise v2 only. A v1-only host is
+refused before work is accepted, and the Core host must negotiate v2 and decode
+the namespace before routing an error.
 
 | Tag    | Message       | Direction | Fields                                                                                                                                            |
 | ------ | ------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -70,7 +72,7 @@ Properties the implementation enforces:
   path, and error messages are bounded static diagnostics that never echo
   argv or paths.
 - **PTY stays in Core.** `io = pty` / `kind = interactive` are reserved codes;
-  the component refuses them with `Error { kind: unsupported }` because the v1
+  the component refuses them with `Error { kind: unsupported }` because the
   protocol has no stdin channel and interactive PTY ownership belongs to the
   terminal primitive.
 - **Typed results.** Spawn failures are `Exit { outcome: spawn_failed }`;
@@ -84,14 +86,22 @@ Properties the implementation enforces:
   synchronous, so a host that stops reading applies pipe backpressure instead
   of growing an unbounded queue. Finished records stay readable for their
   `retention_ms` (default 60 s); a host spawning high volumes declares a
-  shorter retention to free slots, because v1 has no explicit release verb.
+  shorter retention to free slots, because v2 has no explicit release verb.
 - **Ordering.** `Spawned` is always the first frame for a job; output and
   `Exit` are gated on it. `Exit` closes the job in the writer, so a drain that
   outlives the bounded join cannot place bytes after the terminal frame.
 - **Clean shutdown.** `Shutdown` or stdin EOF terminates every live job
   through the typed immediate cancel, waits up to 5 s for the supervisor to
   observe the state, writes `ShutdownAck` for an explicit `Shutdown`, and
-  exits 0. Protocol violations exit 3.
+  exits 0. Protocol violations exit 3. Shutdown waits at most 5 s for jobs,
+  then the monitor join is bounded at 2 s; a monitor still blocked in an
+  embedder-supplied writer is detached with its registry, gate, and writer
+  references until that write returns or the peer closes the pipe. Registry
+  drain joins are bounded at 5 s; a drain still blocked on an inherited output
+  pipe is detached with its bounded output-store reference until EOF. A
+  descendant that retains a pipe can therefore keep a drain thread alive after
+  the leader exits. These are unresolved resource-lifetime risks for embedders;
+  close the peer on shutdown and do not treat bounded joins as cancellation.
 
 ### Packaging
 
@@ -132,6 +142,8 @@ release binary.
   the streamed SHA-256, and spawn the binary from its version directory.
 - Own the handshake deadline, request ids, per-request deadlines, capability
   grants, consent, and safe-mode denial (none live in this component).
+- Negotiate protocol v2 before sending work. Treat a v1-only refusal as an
+  incompatible component, not as a successful v1 connection.
 - Treat `Error { request: 0 }`/EOF/exit-3 as `component_lost`; request-level
   `Error` frames fail only the identified request. On connection loss, fail
   in-flight work and restart with the existing backoff policy. Place the

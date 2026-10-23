@@ -130,7 +130,7 @@ fi
 
 grep -Fx '[component]' "$REPO_ROOT/$DESCRIPTOR_FILE" >/dev/null || die "root descriptor must contain [component]"
 grep -Fx "name = \"$COMPONENT_NAME\"" "$REPO_ROOT/$DESCRIPTOR_FILE" >/dev/null || die "root descriptor name must be $COMPONENT_NAME"
-grep -Fx 'protocol = [1, 1]' "$REPO_ROOT/$DESCRIPTOR_FILE" >/dev/null || die "root descriptor protocol must be [1, 1]"
+grep -Fx 'protocol = [2, 2]' "$REPO_ROOT/$DESCRIPTOR_FILE" >/dev/null || die "root descriptor protocol must be [2, 2]"
 grep -Fx "executable = \"$EXECUTABLE\"" "$REPO_ROOT/$DESCRIPTOR_FILE" >/dev/null || die "root descriptor executable must be $EXECUTABLE"
 grep -Fx "version = \"$cargo_version\"" "$REPO_ROOT/$DESCRIPTOR_FILE" >/dev/null || die "root descriptor version must be $cargo_version"
 grep -Fx "sha256 = \"$ZERO_DIGEST\"" "$REPO_ROOT/$DESCRIPTOR_FILE" >/dev/null || die "root descriptor must use the zero digest sentinel"

@@ -1,4 +1,4 @@
-//! Component server: wraps the in-process [`JobRegistry`] behind the v1
+//! Component server: wraps the in-process [`JobRegistry`] behind the v2
 //! stdio protocol.
 //!
 //! The binary entry point (`bitty-execution` with no arguments) calls
@@ -80,7 +80,9 @@ const EVENT_POLL: Duration = Duration::from_millis(10);
 /// Poll interval while waiting for jobs to reach a terminal state.
 const TERMINAL_POLL: Duration = Duration::from_millis(5);
 
-/// Bounded join wait for the monitor thread.
+/// Bounded join wait for the monitor thread. If a monitor is blocked in a
+/// writer after this bound, it is detached; the host owns the stdio lifetime
+/// and must close the peer to release that blocked write.
 const MONITOR_JOIN_WAIT: Duration = Duration::from_secs(2);
 
 const ERR_HANDSHAKE_REQUIRED: &str = "handshake required";

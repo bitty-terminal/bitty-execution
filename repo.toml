@@ -2,7 +2,7 @@
 name = "bitty-execution"
 kind = "extension"
 lang = "rust"
-role = "execution supervisor extension; landed crate + installable stdio component (protocol v1)"
+role = "execution supervisor extension; landed crate + installable stdio component (protocol v2)"
 owner = "bitty-core"
 docs = "bitty-terminal-docs"
 
@@ -13,4 +13,4 @@ rust_version = "1.85"
 status = "landed; executable component boundary CTX-0010"
 
 [contracts]
-status = "W-132 accepted; CTX-0002/0003/0004 complete; Core W-140 parity verified; execution component protocol v1 packed (host client pending)"
+status = "W-132 accepted; CTX-0002/0003/0004 complete; Core W-140 parity verified; execution component protocol v2 packed (host client pending)"

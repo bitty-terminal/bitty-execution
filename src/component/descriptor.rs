@@ -1,4 +1,4 @@
-//! `bitty-component.toml` parsing and validation (component descriptor v1).
+//! `bitty-component.toml` parsing and validation (component descriptor v2).
 //!
 //! The descriptor is the same closed record Core installs for every native
 //! component (DIR-030): one `[component]` table with exactly `name`,
@@ -14,7 +14,7 @@
 //!   the canonical repository record; packaging replaces it with the real
 //!   target digest.
 //! - [`ComponentDescriptor::validate_for_install`] refuses the sentinel and
-//!   requires the identity of this component (`execution`, protocol 1,
+//!   requires the identity of this component (`execution`, protocol 2,
 //!   executable `bitty-execution`).
 //!
 //! Versions are the strict `X.Y.Z` core only. Core's installer accepts full
@@ -34,10 +34,10 @@ pub const COMPONENT_NAME: &str = "execution";
 pub const COMPONENT_EXECUTABLE: &str = "bitty-execution";
 
 /// Lowest wire protocol version this component speaks.
-pub const COMPONENT_PROTOCOL_MIN: u16 = 1;
+pub const COMPONENT_PROTOCOL_MIN: u16 = 2;
 
 /// Highest wire protocol version this component speaks.
-pub const COMPONENT_PROTOCOL_MAX: u16 = 1;
+pub const COMPONENT_PROTOCOL_MAX: u16 = 2;
 
 /// Maximum descriptor size accepted from disk or an archive (matches Core's
 /// `COMPONENT_DESCRIPTOR_MAX_BYTES`).
@@ -268,7 +268,7 @@ impl ComponentDescriptor {
     }
 
     /// Validates that this record describes this component (`execution`,
-    /// executable `bitty-execution`, protocol 1).
+    /// executable `bitty-execution`, protocol 2).
     ///
     /// # Errors
     ///
@@ -432,15 +432,15 @@ mod tests {
         let descriptor = ComponentDescriptor::parse(&text(
             "execution",
             "0.0.1",
-            "[1, 1]",
+            "[2, 2]",
             "bitty-execution",
             DIGEST,
         ))
         .expect("valid");
         assert_eq!(descriptor.name, "execution");
         assert_eq!(descriptor.version, "0.0.1");
-        assert_eq!((descriptor.protocol_min, descriptor.protocol_max), (1, 1));
-        assert!(descriptor.supports_protocol(1));
+        assert_eq!((descriptor.protocol_min, descriptor.protocol_max), (2, 2));
+        assert!(descriptor.supports_protocol(2));
         assert!(!descriptor.has_placeholder_digest());
         descriptor.validate_for_install().expect("installable");
     }
@@ -450,7 +450,7 @@ mod tests {
         let descriptor = ComponentDescriptor::parse(&text(
             "execution",
             "0.0.1",
-            "[1, 1]",
+            "[2, 2]",
             "bitty-execution",
             PLACEHOLDER_SHA256,
         ))
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn identity_is_checked() {
         let wrong_name =
-            ComponentDescriptor::parse(&text("net", "0.0.1", "[1, 1]", "bitty-net", DIGEST))
+            ComponentDescriptor::parse(&text("net", "0.0.1", "[2, 2]", "bitty-net", DIGEST))
                 .expect("parses");
         assert_eq!(
             wrong_name.validate_identity(),
@@ -488,7 +488,7 @@ mod tests {
         let wrong_version = ComponentDescriptor::parse(&text(
             "execution",
             "9.9.9",
-            "[1, 1]",
+            "[2, 2]",
             "bitty-execution",
             DIGEST,
         ))
@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn rejects_unknown_duplicate_and_missing_keys() {
         let unknown =
-            text("execution", "0.0.1", "[1, 1]", "bitty-execution", DIGEST) + "extra = \"x\"\n";
+            text("execution", "0.0.1", "[2, 2]", "bitty-execution", DIGEST) + "extra = \"x\"\n";
         assert!(matches!(
             ComponentDescriptor::parse(&unknown),
             Err(DescriptorError::Syntax { .. })

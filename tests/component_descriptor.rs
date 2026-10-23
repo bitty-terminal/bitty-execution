@@ -49,7 +49,7 @@ fn packaged_digest_is_installable() {
 
 #[test]
 fn protocol_and_capacity_claims_are_consistent() {
-    assert_eq!(PROTOCOL_VERSION, 1);
+    assert_eq!(PROTOCOL_VERSION, 2);
     assert_eq!(COMPONENT_PROTOCOL_MIN, PROTOCOL_VERSION);
     assert_eq!(COMPONENT_PROTOCOL_MAX, PROTOCOL_VERSION);
     assert_eq!(MAX_JOBS, bitty_ipc::execution::MAX_TRACKED_EXECUTIONS);

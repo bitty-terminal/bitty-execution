@@ -24,7 +24,7 @@ fn usage() {
     eprintln!(
         "usage: bitty-execution [--version | --check-manifest PATH]\n\
          \n\
-         With no arguments, serves the execution component protocol v1 on\n\
+         With no arguments, serves the execution component protocol v2 on\n\
          stdin/stdout. stderr carries diagnostics only."
     );
 }
