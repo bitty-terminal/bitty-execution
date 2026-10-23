@@ -957,8 +957,7 @@ struct JobGates {
 #[derive(Default)]
 struct GateState {
     jobs: BTreeMap<u64, Gate>,
-    removed: BTreeSet<u64>,
-    removed_order: VecDeque<u64>,
+    registered_through: u64,
     waiting: usize,
     stopping: bool,
 }
@@ -979,8 +978,7 @@ impl JobGates {
 
     fn insert(&self, record: u64, wire: u64) {
         let mut state = lock(&self.state);
-        state.removed.remove(&record);
-        state.removed_order.retain(|removed| *removed != record);
+        state.registered_through = state.registered_through.max(record);
         state.jobs.insert(
             record,
             Gate {
@@ -1001,13 +999,18 @@ impl JobGates {
     fn resolve(&self, record: u64) -> Option<u64> {
         let mut state = lock(&self.state);
         loop {
-            if state.stopping || state.removed.contains(&record) {
+            if state.stopping {
                 return None;
             }
             if let Some(gate) = state.jobs.get(&record) {
                 if gate.published {
                     return Some(gate.wire);
                 }
+            } else if record <= state.registered_through {
+                // The component registers records serially before starting
+                // supervisors. An absent record at/below this watermark was
+                // already removed (or its supervisor failed to start).
+                return None;
             }
             state.waiting += 1;
             self.wake.notify_all();
@@ -1022,14 +1025,6 @@ impl JobGates {
     fn remove(&self, record: u64) {
         let mut state = lock(&self.state);
         state.jobs.remove(&record);
-        if state.removed.insert(record) {
-            state.removed_order.push_back(record);
-        }
-        while state.removed_order.len() > MAX_CLOSED_JOB_RECORDS {
-            if let Some(expired) = state.removed_order.pop_front() {
-                state.removed.remove(&expired);
-            }
-        }
         self.wake.notify_all();
     }
 
