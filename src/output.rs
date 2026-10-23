@@ -34,7 +34,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::model::JobError;
+use crate::model::{JobError, JobId};
 
 /// Maximum retained payload bytes per stream (`stdout`/`stderr`) of one job.
 ///
@@ -266,6 +266,23 @@ impl OutputIndex {
 
 // ── store ───────────────────────────────────────────────────────────────────
 
+/// Observer of raw child output as the supervisor drains it.
+///
+/// A host that must stream output while the job runs (the executable
+/// component does) installs one observer on the registry
+/// ([`JobRegistry::with_output_observer`](crate::JobRegistry::with_output_observer)).
+/// The callback runs on the drain thread, immediately after the bytes enter
+/// the bounded store; it must not block indefinitely, and it must not call
+/// back into the same job's registry operation that waits for its drain.
+/// Panics are the observer's bug and are not recovered here.
+///
+/// PTY jobs report their merged terminal output as [`OutputStream::Stdout`].
+pub trait OutputObserver: Send + Sync {
+    /// One drained chunk. `bytes` is non-empty and at most the supervisor's
+    /// drain chunk size (8 KiB today).
+    fn on_output(&self, job: JobId, stream: OutputStream, bytes: &[u8]);
+}
+
 /// Retained chunks of one stream; the sum of chunk lengths never exceeds
 /// [`MAX_OUTPUT_BYTES_PER_JOB`].
 #[derive(Debug, Default)]
@@ -308,22 +325,51 @@ struct OutputStore {
 /// store dies with the last clone — normally the job record, so eviction
 /// reclaims the bytes (a drain that outlives a kill keeps its clone until
 /// EOF, still under the per-stream bound).
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct OutputSink {
     inner: Arc<Mutex<OutputStore>>,
+    tap: Option<Arc<OutputTap>>,
+}
+
+/// Job identity plus observer installed on one sink.
+#[derive(Clone)]
+struct OutputTap {
+    job: JobId,
+    observer: Arc<dyn OutputObserver>,
 }
 
 impl OutputSink {
+    /// Sink for `job` that notifies `observer` after every stored chunk.
+    pub(crate) fn for_job(job: JobId, observer: Arc<dyn OutputObserver>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(OutputStore::default())),
+            tap: Some(Arc::new(OutputTap { job, observer })),
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, OutputStore> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(crate) fn push_stdout(&self, data: &[u8]) {
         self.lock().stdout.push(data);
+        self.notify(OutputStream::Stdout, data);
     }
 
     pub(crate) fn push_stderr(&self, data: &[u8]) {
         self.lock().stderr.push(data);
+        self.notify(OutputStream::Stderr, data);
+    }
+
+    /// Notifies the observer after the store lock is released, so an observer
+    /// that blocks on a downstream writer can never stall an output read.
+    fn notify(&self, stream: OutputStream, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        if let Some(tap) = &self.tap {
+            tap.observer.on_output(tap.job, stream, data);
+        }
     }
 
     pub(crate) fn index(&self) -> OutputIndex {

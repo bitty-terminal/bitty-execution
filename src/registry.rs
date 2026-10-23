@@ -41,7 +41,9 @@ use crate::outcome::{
     CancelEffect, CancelMode, CancelOutcome, CancelReceipt, CancelRequest, DeadlineClock,
     ExecutionGeneration, ExecutionHandle, ExecutionOutcome, ExitObservation,
 };
-use crate::output::{OutputIndex, OutputSink, OutputStream, OutputView, ReadOutput};
+use crate::output::{
+    OutputIndex, OutputObserver, OutputSink, OutputStream, OutputView, ReadOutput,
+};
 use crate::process_tree::KillScope;
 use crate::sensitive_input::{EchoState, InteractionClass, automated_input_allowed};
 
@@ -216,6 +218,7 @@ impl JobRegistry {
                 worker_spawner,
                 cgroups: CgroupSource::NotConfigured,
                 spawn_preparer: None,
+                output_observer: None,
             })),
         }
     }
@@ -230,6 +233,19 @@ impl JobRegistry {
     #[must_use]
     pub fn with_spawn_preparer(self, preparer: Arc<dyn SpawnPreparer>) -> Self {
         lock_inner(&self.shared).spawn_preparer = Some(preparer);
+        self
+    }
+
+    /// Installs the host-owned output observer.
+    ///
+    /// Every job spawned after this call notifies the observer from its drain
+    /// thread, immediately after the chunk enters the bounded store. The
+    /// observer is host authority (the executable component uses it to stream
+    /// stdout/stderr frames); it never changes job state and cloneable
+    /// registries share one observer.
+    #[must_use]
+    pub fn with_output_observer(self, observer: Arc<dyn OutputObserver>) -> Self {
+        lock_inner(&self.shared).output_observer = Some(observer);
         self
     }
 
@@ -294,6 +310,55 @@ impl JobRegistry {
     /// process and no thread is started), and [`JobError::Unavailable`] when
     /// the supervisor thread cannot be created (the record is removed again).
     pub fn spawn(&self, spec: JobSpec) -> Result<JobId, JobError> {
+        self.spawn_with_hooks(spec, |_| {}, |_| {})
+    }
+
+    /// Spawns one unowned job and invokes `before_start` after allocating its
+    /// record but before starting the supervisor thread.
+    ///
+    /// The hook runs outside the registry lock so adapters can publish their
+    /// own state without blocking registry operations. It is never called for
+    /// invalid or over-capacity requests.
+    pub fn spawn_with_hook<F>(&self, spec: JobSpec, before_start: F) -> Result<JobId, JobError>
+    where
+        F: FnOnce(JobId),
+    {
+        self.spawn_with_hooks(spec, before_start, |_| {})
+    }
+
+    /// Spawns one unowned job with publication hooks around supervisor start.
+    ///
+    /// `before_start` runs after the registry record is allocated and before
+    /// the supervisor thread starts. `on_start_failure` runs if that thread
+    /// cannot be created, allowing an adapter to remove a reservation made by
+    /// `before_start`. Both hooks run outside the registry lock.
+    pub fn spawn_with_hooks<F, C>(
+        &self,
+        spec: JobSpec,
+        before_start: F,
+        on_start_failure: C,
+    ) -> Result<JobId, JobError>
+    where
+        F: FnOnce(JobId),
+        C: FnOnce(JobId),
+    {
+        self.spawn_with_hooks_and_launcher(spec, before_start, on_start_failure, |name, work| {
+            thread::Builder::new().name(name).spawn(work).map(|_| ())
+        })
+    }
+
+    pub(crate) fn spawn_with_hooks_and_launcher<F, C, L>(
+        &self,
+        spec: JobSpec,
+        before_start: F,
+        on_start_failure: C,
+        start: L,
+    ) -> Result<JobId, JobError>
+    where
+        F: FnOnce(JobId),
+        C: FnOnce(JobId),
+        L: FnOnce(String, Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+    {
         spec.validate()?;
         let (id, control, output) = {
             let mut inner = lock_inner(&self.shared);
@@ -306,7 +371,7 @@ impl JobRegistry {
             let id = inner.allocate_id()?;
             let generation = inner.generation_for(id);
             let control = Arc::new(JobControl::new());
-            let output = OutputSink::default();
+            let output = inner.output_sink(id);
             inner.jobs.insert(
                 id,
                 JobRecord::unowned(
@@ -319,17 +384,20 @@ impl JobRegistry {
             );
             (id, control, output)
         };
+        before_start(id);
         let shared = Arc::clone(&self.shared);
-        thread::Builder::new()
-            .name(format!("bitty-job-{}", id.get()))
-            .spawn(move || supervise(shared, id, spec, control, output))
-            .map_err(|error| {
-                let mut inner = lock_inner(&self.shared);
-                inner.jobs.remove(&id);
-                JobError::Unavailable {
-                    reason: format!("supervisor thread failed to start: {error}"),
-                }
-            })?;
+        start(
+            format!("bitty-job-{}", id.get()),
+            Box::new(move || supervise(shared, id, spec, control, output)),
+        )
+        .map_err(|error| {
+            on_start_failure(id);
+            let mut inner = lock_inner(&self.shared);
+            inner.jobs.remove(&id);
+            JobError::Unavailable {
+                reason: format!("supervisor thread failed to start: {error}"),
+            }
+        })?;
         Ok(id)
     }
 
@@ -553,7 +621,7 @@ impl JobRegistry {
             let id = inner.allocate_id()?;
             let generation = inner.generation_for(id);
             let control = Arc::new(JobControl::new());
-            let output = OutputSink::default();
+            let output = inner.output_sink(id);
             inner.jobs.insert(
                 id,
                 JobRecord::owned(
@@ -1398,6 +1466,9 @@ struct RegistryInner {
     cgroups: CgroupSource,
     /// Host-owned pre-spawn preparation (confinement hooks); one per registry.
     spawn_preparer: Option<Arc<dyn SpawnPreparer>>,
+    /// Host-owned stream observer; one per registry. Every spawned job's
+    /// output store notifies it after each drained chunk.
+    output_observer: Option<Arc<dyn OutputObserver>>,
 }
 
 /// Starts one named worker thread for a job backend.
@@ -1437,6 +1508,15 @@ impl RegistryInner {
         let id = JobId::from_raw(self.next_id).ok_or_else(id_space_exhausted)?;
         self.next_id = self.next_id.checked_add(1).ok_or_else(id_space_exhausted)?;
         Ok(id)
+    }
+
+    /// Output sink for a freshly allocated job, carrying the registry's
+    /// observer when one is installed.
+    fn output_sink(&self, id: JobId) -> OutputSink {
+        match &self.output_observer {
+            Some(observer) => OutputSink::for_job(id, Arc::clone(observer)),
+            None => OutputSink::default(),
+        }
     }
 
     /// Removes finished records whose retention elapsed.
@@ -2336,8 +2416,11 @@ impl Backend {
 /// supervisor. Bytes drained so far stay in the store either way.
 const DRAIN_JOIN_BOUND: Duration = Duration::from_secs(5);
 
-/// Joins finished drains within [`DRAIN_JOIN_BOUND`]; unfinished ones are
-/// detached and keep their bounded store clone until EOF.
+/// Joins finished drains within [`DRAIN_JOIN_BOUND`]. Unfinished drains are
+/// detached and keep their bounded store clone until EOF. The registry cannot
+/// forcibly close a pipe owned by a descendant that escaped the adopted tree,
+/// so callers must treat the detached thread and its pipe as a resource
+/// lifetime risk after the bound expires.
 fn join_drains(drains: &mut Vec<thread::JoinHandle<()>>) {
     let deadline = Instant::now().checked_add(DRAIN_JOIN_BOUND);
     while !drains.iter().all(thread::JoinHandle::is_finished) {

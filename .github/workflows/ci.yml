@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
           just-version: "1.58.0"
@@ -34,6 +36,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
@@ -49,6 +53,56 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
           args: -color
+
+  component-package:
+    name: Component package (linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: 1.98.1
+      - name: Build release component
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu --bin bitty-execution
+      - name: Pack target archive and checksums
+        run: |
+          scripts/package-component.sh \
+            --version "$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)" \
+            --target x86_64-unknown-linux-gnu \
+            --binary target/x86_64-unknown-linux-gnu/release/bitty-execution \
+            --output dist/x86_64-unknown-linux-gnu.tar.gz
+      - name: Verify package shape
+        run: scripts/test-package-component.sh
+      - name: Smoke-test the packed executable
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          mkdir -p dist/smoke
+          tar -xzf dist/x86_64-unknown-linux-gnu.tar.gz -C dist/smoke
+          dist/smoke/bitty-execution --version | grep -Fx "bitty-execution $version"
+          dist/smoke/bitty-execution --check-manifest dist/smoke/bitty-component.toml
+          test -s dist/SHA256SUMS
+          (cd dist && sha256sum -c SHA256SUMS)
+      - name: Run the live protocol suite against the packed executable
+        env:
+          BITTY_EXECUTION_COMPONENT_BIN: ${{ github.workspace }}/dist/smoke/bitty-execution
+        run: cargo test --test component_server --locked
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-component-linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7

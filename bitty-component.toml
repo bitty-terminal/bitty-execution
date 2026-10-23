@@ -1,0 +1,16 @@
+# bitty-component.toml — canonical component descriptor record for `execution`
+# (bitty#2494 split). Owner naming: component name `execution` (repository
+# `bitty-execution`); executable `bitty-execution` (the `bitty-<name>` rule).
+#
+# This file records the FIXED descriptor fields (name, version, protocol,
+# executable). The `sha256` below is a parser-valid placeholder: every target
+# binary has its own digest, so `scripts/package-component.sh` renders a
+# per-target stage copy with the real digest and refuses to pack when any
+# other line drifts from this file. Never publish this placeholder file itself
+# as a release descriptor.
+[component]
+name = "execution"
+version = "0.0.1"
+protocol = [2, 2]
+executable = "bitty-execution"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
