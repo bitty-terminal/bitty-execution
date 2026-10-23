@@ -74,9 +74,6 @@ pub const SERVER_EXIT_INTERNAL: u8 = 4;
 /// Longest the server waits for killed jobs to be observed as terminal.
 pub const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 
-/// Longest a job's output drain waits for its `Spawned` reply to be written.
-const GATE_WAIT: Duration = Duration::from_secs(5);
-
 /// Delivery-log poll interval for the monitor thread.
 const EVENT_POLL: Duration = Duration::from_millis(10);
 
@@ -960,6 +957,9 @@ struct JobGates {
 #[derive(Default)]
 struct GateState {
     jobs: BTreeMap<u64, Gate>,
+    removed: BTreeSet<u64>,
+    removed_order: VecDeque<u64>,
+    waiting: usize,
     stopping: bool,
 }
 
@@ -978,7 +978,10 @@ impl JobGates {
     }
 
     fn insert(&self, record: u64, wire: u64) {
-        lock(&self.state).jobs.insert(
+        let mut state = lock(&self.state);
+        state.removed.remove(&record);
+        state.removed_order.retain(|removed| *removed != record);
+        state.jobs.insert(
             record,
             Gate {
                 wire,
@@ -996,30 +999,38 @@ impl JobGates {
     }
 
     fn resolve(&self, record: u64) -> Option<u64> {
-        let deadline = Instant::now() + GATE_WAIT;
         let mut state = lock(&self.state);
         loop {
-            if state.stopping {
+            if state.stopping || state.removed.contains(&record) {
                 return None;
             }
-            let gate = state.jobs.get(&record)?;
-            if gate.published {
-                return Some(gate.wire);
+            if let Some(gate) = state.jobs.get(&record) {
+                if gate.published {
+                    return Some(gate.wire);
+                }
             }
-            let now = Instant::now();
-            if now >= deadline {
-                return None;
-            }
-            let (next, _) = self
+            state.waiting += 1;
+            self.wake.notify_all();
+            state = self
                 .wake
-                .wait_timeout(state, deadline.saturating_duration_since(now))
+                .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
-            state = next;
+            state.waiting -= 1;
         }
     }
 
     fn remove(&self, record: u64) {
-        lock(&self.state).jobs.remove(&record);
+        let mut state = lock(&self.state);
+        state.jobs.remove(&record);
+        if state.removed.insert(record) {
+            state.removed_order.push_back(record);
+        }
+        while state.removed_order.len() > MAX_CLOSED_JOB_RECORDS {
+            if let Some(expired) = state.removed_order.pop_front() {
+                state.removed.remove(&expired);
+            }
+        }
+        self.wake.notify_all();
     }
 
     fn stop(&self) {
@@ -1244,17 +1255,52 @@ mod tests {
         let gates = JobGates::new();
         let registry = JobRegistry::new();
         let spec = JobSpec::new("/bin/true", Vec::new());
+        let event_head_before_hook = std::sync::atomic::AtomicU64::new(u64::MAX);
         let job = registry
-            .spawn_with_hooks(
+            .spawn_with_hooks_and_launcher(
                 spec,
                 |record| {
+                    event_head_before_hook.store(registry.event_head_seq(), Ordering::SeqCst);
                     gates.insert(record.get(), 17);
-                    gates.publish(record.get());
                 },
                 |record| gates.remove(record.get()),
+                |_, supervisor| {
+                    supervisor();
+                    Ok(())
+                },
             )
             .expect("spawn succeeds");
+        assert_eq!(event_head_before_hook.load(Ordering::SeqCst), 0);
+        gates.publish(job.get());
         assert_eq!(gates.resolve(job.get()), Some(17));
         let _ = registry.cancel(job);
+    }
+
+    #[test]
+    fn gate_resolution_waits_until_spawned_is_published() {
+        let gates = Arc::new(JobGates::new());
+        let waiting = Arc::clone(&gates);
+        let resolver = thread::spawn(move || waiting.resolve(7));
+        gates.insert(7, 17);
+        let mut state = lock(&gates.state);
+        while state.waiting == 0 {
+            state = gates
+                .wake
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        drop(state);
+        gates.publish(7);
+        assert_eq!(resolver.join().expect("resolver joins"), Some(17));
+    }
+
+    #[test]
+    fn removing_a_gate_wakes_waiters_without_publishing() {
+        let gates = Arc::new(JobGates::new());
+        let waiting = Arc::clone(&gates);
+        let resolver = thread::spawn(move || waiting.resolve(7));
+        gates.insert(7, 17);
+        gates.remove(7);
+        assert_eq!(resolver.join().expect("resolver joins"), None);
     }
 }

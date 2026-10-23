@@ -342,6 +342,23 @@ impl JobRegistry {
         F: FnOnce(JobId),
         C: FnOnce(JobId),
     {
+        self.spawn_with_hooks_and_launcher(spec, before_start, on_start_failure, |name, work| {
+            thread::Builder::new().name(name).spawn(work).map(|_| ())
+        })
+    }
+
+    pub(crate) fn spawn_with_hooks_and_launcher<F, C, L>(
+        &self,
+        spec: JobSpec,
+        before_start: F,
+        on_start_failure: C,
+        start: L,
+    ) -> Result<JobId, JobError>
+    where
+        F: FnOnce(JobId),
+        C: FnOnce(JobId),
+        L: FnOnce(String, Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+    {
         spec.validate()?;
         let (id, control, output) = {
             let mut inner = lock_inner(&self.shared);
@@ -369,17 +386,18 @@ impl JobRegistry {
         };
         before_start(id);
         let shared = Arc::clone(&self.shared);
-        thread::Builder::new()
-            .name(format!("bitty-job-{}", id.get()))
-            .spawn(move || supervise(shared, id, spec, control, output))
-            .map_err(|error| {
-                on_start_failure(id);
-                let mut inner = lock_inner(&self.shared);
-                inner.jobs.remove(&id);
-                JobError::Unavailable {
-                    reason: format!("supervisor thread failed to start: {error}"),
-                }
-            })?;
+        start(
+            format!("bitty-job-{}", id.get()),
+            Box::new(move || supervise(shared, id, spec, control, output)),
+        )
+        .map_err(|error| {
+            on_start_failure(id);
+            let mut inner = lock_inner(&self.shared);
+            inner.jobs.remove(&id);
+            JobError::Unavailable {
+                reason: format!("supervisor thread failed to start: {error}"),
+            }
+        })?;
         Ok(id)
     }
 
