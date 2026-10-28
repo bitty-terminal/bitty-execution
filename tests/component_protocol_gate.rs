@@ -88,9 +88,12 @@ fn descriptor_protocol_gate_matches_the_linked_codec_and_core_shared_abi() {
         "the descriptor gate must compare against the codec constant the binary links"
     );
 
-    // This assertion is the release gate, not a compatibility claim: when
-    // Core's shared component ABI moves, the descriptor decision in issue
-    // #21 must be re-evaluated against the new install path.
+    // This assertion is the release gate, not a compatibility claim. It
+    // compares against the pinned `bitty-network-wire` `c8710e0` snapshot
+    // (see `Cargo.toml`), not Core's live `Cargo.lock`; bump that pin when
+    // assessing a new Core release. When the newly pinned shared ABI moves,
+    // the descriptor decision in issue #21 must be re-evaluated against the
+    // new install path.
     assert_eq!(
         CORE_SHARED_PROTOCOL_VERSION, 1,
         "Core's shared component ABI moved to v{CORE_SHARED_PROTOCOL_VERSION}; re-evaluate the \
