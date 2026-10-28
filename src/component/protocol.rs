@@ -38,7 +38,7 @@
 //! | `0x20` | `Spawned`      | `job:u64 generation:u64`                                                                           | comp->host |
 //! | `0x21` | `Started`      | `job:u64`                                                                                          | comp->host |
 //! | `0x22` | `Output`       | `job:u64 stream:u8 data:bytes`                                                                     | comp->host |
-//! | `0x23` | _reserved_     | not assigned in v1                                                                                 | —          |
+//! | `0x23` | _reserved_     | not assigned                                                                                       | —          |
 //! | `0x24` | `Exit`         | `job:u64 outcome:u8 detail:i32 cancel:u8 clock:u8 kill_scope:u8 oom:u8 oom_gap:u8 stdout_total:u64 stdout_evicted:u64 stderr_total:u64 stderr_evicted:u64` | comp->host |
 //! | `0x25` | `Canceled`     | `job:u64 outcome:u8`                                                                               | comp->host |
 //! | `0x26` | `OutputView`   | `request:u64 job:u64 stream:u8 data:bytes total:u64 dropped:u64 truncated:bool lines:u32`           | comp->host |
@@ -50,12 +50,15 @@
 //! reply confirms acceptance and carries the execution generation used by
 //! `Terminate`. `ReadOutput` request ids are non-zero and have bit 63 clear.
 //! Job-correlated errors set bit 63 and carry the host job id in the remaining
-//! bits. `Error.request == 0` marks a connection-level failure. This keeps the
-//! v2 intentionally reserves the high bit for job-correlated errors. A v1
-//! host must not connect to this component: the handshake range is v2 only,
-//! so it receives a protocol error and the component exits before accepting
-//! work. This prevents a v1 host from interpreting a job error as a request
-//! error.
+//! bits. `Error.request == 0` marks a connection-level failure. The v2
+//! protocol intentionally reserves the high bit for job-correlated errors. A
+//! v1 host must not connect to this component: the handshake range is v2 only,
+//! so the component refuses the connection and exits before accepting work.
+//! The refusal is a v2 `Error` frame; a v1 decoder reads its kind byte `7` as
+//! `ComponentLost`, not `Protocol` (v1 code `6`), because the error tables
+//! differ. A v1 host must therefore treat the refusal as a lost component,
+//! never as a usable connection. This also prevents a v1 host from
+//! interpreting a job error as a request error.
 //!
 //! # Authority and capability boundary
 //!

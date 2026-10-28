@@ -25,6 +25,7 @@ use bitty_execution::component::server::{
     COMPONENT_VERSION, SERVER_EXIT_OK, SERVER_EXIT_PROTOCOL, serve,
 };
 use bitty_network_wire::{
+    ErrorKind as CoreSharedErrorKind, FrameReader as CoreSharedFrameReader,
     Message as CoreSharedMessage, PROTOCOL_VERSION as CORE_SHARED_PROTOCOL_VERSION,
     write_frame as write_core_shared_frame,
 };
@@ -118,7 +119,7 @@ fn descriptor_protocol_gate_matches_the_linked_codec_and_core_shared_abi() {
 }
 
 #[test]
-fn a_real_v1_client_is_refused_before_work_is_accepted() {
+fn v1_only_client_is_refused_and_the_v1_codec_reads_component_lost() {
     let mut input = Vec::new();
     write_core_shared_frame(
         &mut input,
@@ -134,6 +135,9 @@ fn a_real_v1_client_is_refused_before_work_is_accepted() {
     let (code, output) = run_server(input);
 
     assert_eq!(code, SERVER_EXIT_PROTOCOL);
+
+    // The component always writes its own v2 frame. A v2 decoder sees the
+    // typed connection-level protocol refusal.
     assert_eq!(
         decode(&output),
         vec![Message::Error {
@@ -141,7 +145,30 @@ fn a_real_v1_client_is_refused_before_work_is_accepted() {
             kind: ErrorKind::Protocol,
             message: "protocol version unsupported".to_owned(),
         }],
-        "a v1 host must receive a typed refusal, never a HelloAck"
+        "a v2 decoder sees the component's typed protocol refusal"
+    );
+
+    // The pinned v1 codec reads the same kind byte as `ComponentLost`, not
+    // `Protocol`: v1 code 6 is `Protocol`, v2 code 7 is `Protocol`, and v1
+    // code 7 is `ComponentLost`. Pin the actual observation so the docs and
+    // the release decision cannot claim a v1 host sees `protocol` (issue
+    // #21 review).
+    assert_eq!(CoreSharedErrorKind::Protocol.code(), 6);
+    assert_eq!(CoreSharedErrorKind::ComponentLost.code(), 7);
+    let mut v1 = CoreSharedFrameReader::new(output.as_slice());
+    assert_eq!(
+        v1.read_message()
+            .expect("the real v1 codec decodes the refusal frame"),
+        Some(CoreSharedMessage::Error {
+            id: CONNECTION_ID,
+            kind: CoreSharedErrorKind::ComponentLost,
+            message: "protocol version unsupported".to_owned(),
+        }),
+        "a v1 decoder observes component_lost (code 7), not protocol (code 6)"
+    );
+    assert_eq!(
+        v1.read_message().expect("clean EOF after the refusal"),
+        None
     );
 }
 

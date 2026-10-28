@@ -1,6 +1,6 @@
 //! `bitty-execution` executable component entry point.
 //!
-//! A bare invocation serves the v1 stdio protocol
+//! A bare invocation serves the v2 stdio protocol
 //! ([`bitty_execution::component`]); `--version` reports the component
 //! version used by the descriptor and release tag, and `--check-manifest`
 //! validates a packaged `bitty-component.toml` with the same fail-closed

@@ -274,7 +274,7 @@ impl ComponentDescriptor {
     ///
     /// Returns [`DescriptorError::IdentityMismatch`] naming the first
     /// disagreeing field, or [`DescriptorError::InvalidProtocol`] when the
-    /// range excludes protocol version 1.
+    /// range is not exactly `[2, 2]`.
     pub fn validate_identity(&self) -> Result<(), DescriptorError> {
         if self.name != COMPONENT_NAME {
             return Err(DescriptorError::IdentityMismatch { field: "name" });

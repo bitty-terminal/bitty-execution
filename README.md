@@ -12,9 +12,11 @@ cgroups/OOM and recovery require approved contracts.
 
 ## Executable component boundary (bitty#2494)
 
-The crate is also the installable `execution` native component. It is a stdio
-coprocess in the DIR-030 shape: the host spawns `bitty-execution`, sends
-length-prefixed frames on stdin, and reads frames from stdout. stderr carries
+The crate also ships the `execution` native component binary (packaged, not
+yet installable through Core's shared extension path; see Protocol and
+installability below). It is a stdio coprocess in the DIR-030 shape: the host
+spawns `bitty-execution`, sends length-prefixed frames on stdin, and reads
+frames from stdout. stderr carries
 diagnostics only. The component wraps the same `JobRegistry` as the linked
 library; it carries no installer, no download source, no capability policy,
 and no platform discovery.
@@ -45,8 +47,10 @@ id in its remaining bits, and a high-bit-clear non-zero value is a
 `ReadOutput` request id. The `job` field remains the stable host job id used
 for lifecycle frames. This high-bit namespace is a semantic change from v1;
 the descriptor and handshake therefore advertise v2 only. A v1-only host is
-refused before work is accepted, and the Core host must negotiate v2 and decode
-the namespace before routing an error.
+refused before work is accepted; the refusal is a v2 error frame whose kind
+byte a v1 decoder reads as `component_lost`, not `protocol`, so a v1 host must
+treat it as a lost component and never as a usable connection. The Core host
+must negotiate v2 and decode the namespace before routing an error.
 
 | Tag    | Message       | Direction | Fields                                                                                                                                            |
 | ------ | ------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -129,10 +133,14 @@ What Core needs before a catalog entry can list `execution`:
   `Error.request` namespace) in the canonical component-boundary document.
 
 No Core change is made from this repository. The release gate `just protocol`
-pins the descriptor to the linked codec and fails if either the codec range or
-Core's shared ABI moves, so this decision cannot drift silently. A real v1
-`Hello` is refused with `Error { kind: protocol }` and exit 3; a v2 `Hello`
-completes `HelloAck { protocol: 2 }`.
+compares the descriptor with the linked codec and with Core's shared
+`bitty-network-wire` ABI **as a pinned snapshot** (`rev = "c8710e0"` in
+`Cargo.toml`), not with Core's live `Cargo.lock`. Bump that pin when assessing
+a new Core release; the gate then fails if the codec range or the newly pinned
+shared ABI moves. A real v1 `Hello` is refused and the process exits 3; a v2
+decoder sees `Error { kind: protocol }`, while the pinned v1 decoder reads the
+same kind byte as `component_lost` (code 7), not `protocol` (code 6). A v2
+`Hello` completes `HelloAck { protocol: 2 }`.
 
 ### Packaging
 
@@ -175,7 +183,9 @@ Core 0.0.30 contains the client at `bitty-runtime::execution_component`
 `resolve_search_for_protocol(..., 2)`, verifies the executable digest, spawns
 the binary in its own process group on Unix, owns the handshake/request
 deadlines, and decodes the v2 `Error.request` namespace. A v1-only `Hello` is
-refused with a protocol error and exit 3, never accepted as a v1 connection.
+refused and exits 3, never accepted as a v1 connection; a v1 decoder observes
+that refusal as `component_lost` (code 7), so it must not be used against this
+component.
 
 Remaining for a release:
 
