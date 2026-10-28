@@ -81,6 +81,13 @@ check:
     just hygiene
     just paths
 
+# Release ABI gate (issue #21): the descriptor range must equal the linked
+# execution codec, and the codec must stay a deliberate non-claim against
+# Core's shared `bitty-network-wire` v1 component ABI. Fails when either
+# side moves so release review updates the decision instead of drifting.
+protocol:
+    cargo test --locked --test component_protocol_gate
+
 # Build the Linux x86_64 executable component and pack its release archive.
 component-package:
     ./scripts/package-component.sh --target x86_64-unknown-linux-gnu --output dist/x86_64-unknown-linux-gnu.tar.gz

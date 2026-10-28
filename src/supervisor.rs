@@ -860,6 +860,11 @@ mod tests {
     use super::*;
     use bitty_ipc::execution::EnvPolicy;
 
+    /// Bounded wait for the OS to publish a dropped claim lock (issue #21).
+    const LOCK_RELEASE_WAIT: Duration = Duration::from_secs(5);
+    /// Poll interval while waiting for the dropped-lock release.
+    const LOCK_RELEASE_POLL: Duration = Duration::from_millis(10);
+
     fn terminal_row(id: u64) -> ReconciledJob {
         ReconciledJob {
             record: PersistedJob {
@@ -974,10 +979,28 @@ mod tests {
             "a second handle must not take a held lock"
         );
         drop(first);
+        // `claim_lock` documents drop as the release, but a loaded host (or
+        // a platform with deferred close handling) can still observe the old
+        // holder for a short interval. Wait for the documented state within
+        // a bound instead of assuming the release is immediately visible;
+        // the bound keeps a genuine leak failing the test (issue #21).
+        let deadline = Instant::now() + LOCK_RELEASE_WAIT;
+        let relocked = loop {
+            if let Some(lock) = claim_lock::try_lock(&path).expect("lock io") {
+                break Some(lock);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            thread::sleep(LOCK_RELEASE_POLL);
+        };
         assert!(
-            claim_lock::try_lock(&path).expect("lock io").is_some(),
-            "a dropped lock is free again"
+            relocked.is_some(),
+            "a dropped lock is free again within {LOCK_RELEASE_WAIT:?}"
         );
+        // Release the second handle before cleanup: on Windows the exclusive
+        // open would otherwise keep the scratch file undeletable.
+        drop(relocked);
         let _ = fs::remove_dir_all(&dir);
     }
 
