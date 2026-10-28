@@ -48,6 +48,11 @@ nix = { version = "0.31.3", default-features = false, features = ["fs"] }
 [dev-dependencies]
 # Hermetic live-PTY gating (`require_pty!`) for the moved suites.
 bitty-test-support = { git = "https://github.com/bitty-terminal/bitty", rev = "5670d9ae", package = "bitty-test-support" }
+# Release ABI gate (issue #21): compare this component's descriptor/codec
+# range with Core's shared component wire ABI. The component itself does not
+# speak v1; the dependency exists so the gate fails when either side moves
+# instead of letting the descriptor drift silently.
+bitty-network-wire = { git = "https://github.com/bitty-terminal/bitty-network", rev = "c8710e0" }
 
 # CTX-0903: Windows liveness probes for the owned-tree tests (safe API of
 # the first-party Job Object adapter; no new third-party crate).

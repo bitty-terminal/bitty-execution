@@ -8,6 +8,23 @@
 # per-target stage copy with the real digest and refuses to pack when any
 # other line drifts from this file. Never publish this placeholder file itself
 # as a release descriptor.
+#
+# Protocol decision (issue #21): this component speaks its own execution
+# protocol v2 (`src/component/protocol.rs`, `PROTOCOL_VERSION = 2`), not the
+# `bitty-network-wire` v1 ABI used by `net`/`storage`/`a11y`. Declaring
+# `[1, 1]` would be false and a v1 host would be refused at the handshake (the
+# refusal is a v2 `Error`; a v1 decoder reads kind byte 7 as `component_lost`,
+# not `protocol`, because the v1 `Protocol` code is 6).
+# Core 0.0.30 already has a v2 client
+# (`bitty-runtime::execution_component`, range 2..=2), but the shared install
+# and inventory path still compares every descriptor with the v1 wire constant
+# (`bitty-runtime::component::PROTOCOL_VERSION`), so `bitty extension
+# install/add` refuses `[2, 2]` before staging. The component is therefore not
+# installable through that shared path until Core selects the protocol per
+# component family. Keep this value honest; `just protocol` compares against
+# the pinned `bitty-network-wire` `c8710e0` snapshot (not Core's live
+# `Cargo.lock`) and fails when the codec range, this descriptor, or that
+# pinned ABI moves. Bump the pin when assessing a new Core release.
 [component]
 name = "execution"
 version = "0.0.1"

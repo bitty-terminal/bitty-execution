@@ -71,6 +71,7 @@ name = "bitty-execution"
 version = "0.0.1"
 dependencies = [
  "bitty-ipc",
+ "bitty-network-wire",
  "bitty-plugin-host",
  "bitty-pty",
  "bitty-test-support",
@@ -147,6 +148,11 @@ source = "git+https://github.com/bitty-terminal/bitty?rev=5670d9ae#5670d9ae42a0d
 dependencies = [
  "phodopus",
 ]
+
+[[package]]
+name = "bitty-network-wire"
+version = "0.0.1"
+source = "git+https://github.com/bitty-terminal/bitty-network?rev=c8710e0#c8710e0c6f86a44a91398c121123d5b7e43ba3c1"
 
 [[package]]
 name = "bitty-package"

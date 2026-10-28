@@ -12,9 +12,11 @@ cgroups/OOM and recovery require approved contracts.
 
 ## Executable component boundary (bitty#2494)
 
-The crate is also the installable `execution` native component. It is a stdio
-coprocess in the DIR-030 shape: the host spawns `bitty-execution`, sends
-length-prefixed frames on stdin, and reads frames from stdout. stderr carries
+The crate also ships the `execution` native component binary (packaged, not
+yet installable through Core's shared extension path; see Protocol and
+installability below). It is a stdio coprocess in the DIR-030 shape: the host
+spawns `bitty-execution`, sends length-prefixed frames on stdin, and reads
+frames from stdout. stderr carries
 diagnostics only. The component wraps the same `JobRegistry` as the linked
 library; it carries no installer, no download source, no capability policy,
 and no platform discovery.
@@ -45,8 +47,10 @@ id in its remaining bits, and a high-bit-clear non-zero value is a
 `ReadOutput` request id. The `job` field remains the stable host job id used
 for lifecycle frames. This high-bit namespace is a semantic change from v1;
 the descriptor and handshake therefore advertise v2 only. A v1-only host is
-refused before work is accepted, and the Core host must negotiate v2 and decode
-the namespace before routing an error.
+refused before work is accepted; the refusal is a v2 error frame whose kind
+byte a v1 decoder reads as `component_lost`, not `protocol`, so a v1 host must
+treat it as a lost component and never as a usable connection. The Core host
+must negotiate v2 and decode the namespace before routing an error.
 
 | Tag    | Message       | Direction | Fields                                                                                                                                            |
 | ------ | ------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -103,6 +107,41 @@ Properties the implementation enforces:
   the leader exits. These are unresolved resource-lifetime risks for embedders;
   close the peer on shutdown and do not treat bounded joins as cancellation.
 
+### Protocol and installability (issue #21)
+
+`execution` speaks its own protocol v2 (above), not the `bitty-network-wire`
+v1 ABI used by `net`, `storage`, and `a11y`. The descriptor stays
+`protocol = [2, 2]`; declaring `[1, 1]` would be false, and a v1 host is
+refused before work is accepted.
+
+The component is therefore **not installable through Core's shared extension
+path yet**. Core 0.0.30 contains a v2 client
+(`bitty-runtime::execution_component`, protocol range 2..=2, resolving with
+`resolve_search_for_protocol(..., 2)`), but the shared install and inventory
+path still compares every descriptor with the shared `bitty-network-wire`
+`PROTOCOL_VERSION = 1`: `bitty-terminal/src/component.rs` and
+`component_seed.rs` refuse `[2, 2]` before staging, and `extension list`
+reports `compatible:false`.
+
+What Core needs before a catalog entry can list `execution`:
+
+- select the component protocol per family in the install/ABI path (the
+  execution family uses 2) instead of comparing every descriptor with the
+  shared v1 constant;
+- compute the inventory `compatible` flag with that same per-family protocol;
+- record the second protocol family (tags, handshake range, and the
+  `Error.request` namespace) in the canonical component-boundary document.
+
+No Core change is made from this repository. The release gate `just protocol`
+compares the descriptor with the linked codec and with Core's shared
+`bitty-network-wire` ABI **as a pinned snapshot** (`rev = "c8710e0"` in
+`Cargo.toml`), not with Core's live `Cargo.lock`. Bump that pin when assessing
+a new Core release; the gate then fails if the codec range or the newly pinned
+shared ABI moves. A real v1 `Hello` is refused and the process exits 3; a v2
+decoder sees `Error { kind: protocol }`, while the pinned v1 decoder reads the
+same kind byte as `component_lost` (code 7), not `protocol` (code 6). A v2
+`Hello` completes `HelloAck { protocol: 2 }`.
+
 ### Packaging
 
 ```bash
@@ -124,6 +163,7 @@ catalog rows. No tag is created and nothing is uploaded to R2.
 
 ```bash
 just product                                  # fmt, clippy -D warnings, all tests
+just protocol                                 # descriptor/ABI release gate (issue #21)
 cargo test --test component_server --locked   # live protocol lifecycle
 cargo test --test component_descriptor --locked
 cargo test --test job_output_observer --locked
@@ -136,23 +176,28 @@ component whose host and already-spawned job survive. Set
 `BITTY_EXECUTION_COMPONENT_BIN` to run the same suite against a packed
 release binary.
 
-### Remaining for the Core host client
+### Core host client status
 
-- Resolve/install the descriptor, verify name/version/protocol/executable and
-  the streamed SHA-256, and spawn the binary from its version directory.
-- Own the handshake deadline, request ids, per-request deadlines, capability
-  grants, consent, and safe-mode denial (none live in this component).
-- Negotiate protocol v2 before sending work. Treat a v1-only refusal as an
-  incompatible component, not as a successful v1 connection.
-- Treat `Error { request: 0 }`/EOF/exit-3 as `component_lost`; request-level
-  `Error` frames fail only the identified request. On connection loss, fail
-  in-flight work and restart with the existing backoff policy. Place the
-  component in its own process group/session so a component crash can be cleaned up by killing the
-  group. A crashed component cannot kill the host, but its live jobs can
-  outlive it until the host reaps the group.
-- Run parity tests against the linked crate and remove the direct
-  `bitty-runtime` dependency after parity.
-- Add the remaining target matrix (#2491) and synchronize the canonical docs.
+Core 0.0.30 contains the client at `bitty-runtime::execution_component`
+(pinned to this repository's `36404ab`): it resolves with
+`resolve_search_for_protocol(..., 2)`, verifies the executable digest, spawns
+the binary in its own process group on Unix, owns the handshake/request
+deadlines, and decodes the v2 `Error.request` namespace. A v1-only `Hello` is
+refused and exits 3, never accepted as a v1 connection; a v1 decoder observes
+that refusal as `component_lost` (code 7), so it must not be used against this
+component.
+
+Remaining for a release:
+
+- the shared install/inventory ABI gate described above (v1 vs the execution
+  family's v2) must select the per-family protocol before `install`/`add` can
+  stage this component;
+- the remaining target matrix (#2491);
+- canonical documentation synchronization for the v2 family.
+
+Core still keeps the linked `JobRegistry` as a fallback; removing the direct
+dependency follows rollout and parity. A crashed component cannot kill the
+host, but its live jobs can outlive it until the host reaps the process group.
 
 ## Host spawn preparation
 
