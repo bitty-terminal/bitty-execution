@@ -157,14 +157,15 @@ fn program_basename(argv0: &str) -> &str {
     }
 }
 
-/// Normalizes a POSIX-style path for structural prefix/root matching.
+/// Normalizes a POSIX-style path for structural prefix/root matching,
+/// invoking `visit` on every intermediate prefix and the final normalized path.
 ///
 /// Collapses duplicate slashes, removes `.` segments, resolves `..` segments
 /// within the root or `~` anchor, and strips trailing slashes (preserving `/`
-/// and `~`). This prevents trivial syntactic forms such as `/etc/`, `//`,
-/// `/etc/.`, or `/var/log/..` from bypassing [`BROAD_ROOTS`], [`path_under`],
-/// or [`path_under_home`].
-fn normalize_posix_path(raw: &str) -> String {
+/// and `~`). Visiting every intermediate stack snapshot ensures that ambiguous
+/// symlink + `..` traversal (such as `/etc/link/../../passwd` where `/etc/link`
+/// might point deeper inside `/etc`) still triggers prefix checks on `/etc`.
+fn normalize_posix_path_with_visit(raw: &str, mut visit: impl FnMut(&str)) -> String {
     if raw.is_empty() {
         return String::new();
     }
@@ -174,6 +175,25 @@ fn normalize_posix_path(raw: &str) -> String {
         raw.strip_prefix('~').unwrap_or("")
     } else {
         raw
+    };
+    let format_stack = |stack: &[&str]| -> String {
+        if is_home {
+            if stack.is_empty() {
+                "~".to_owned()
+            } else {
+                format!("~/{}", stack.join("/"))
+            }
+        } else if is_abs {
+            if stack.is_empty() {
+                "/".to_owned()
+            } else {
+                format!("/{}", stack.join("/"))
+            }
+        } else if stack.is_empty() {
+            ".".to_owned()
+        } else {
+            stack.join("/")
+        }
     };
     let mut stack: Vec<&str> = Vec::new();
     for part in rest.split('/') {
@@ -186,41 +206,39 @@ fn normalize_posix_path(raw: &str) -> String {
                     stack.push("..");
                 }
             }
-            seg => stack.push(seg),
+            seg => {
+                stack.push(seg);
+                let intermediate = format_stack(&stack);
+                visit(&intermediate);
+            }
         }
     }
-    if is_home {
-        if stack.is_empty() {
-            "~".to_owned()
-        } else {
-            format!("~/{}", stack.join("/"))
-        }
-    } else if is_abs {
-        if stack.is_empty() {
-            "/".to_owned()
-        } else {
-            format!("/{}", stack.join("/"))
-        }
-    } else if stack.is_empty() {
-        ".".to_owned()
-    } else {
-        stack.join("/")
-    }
+    let final_path = format_stack(&stack);
+    visit(&final_path);
+    final_path
 }
 
-/// True when `arg` names a path under one of `prefixes` (exact match or a
-/// `/`-bounded child). `~` expands only to the literal home marker the
-/// caller resolves; unresolved `~` never matches, so an unexpanded path
+fn normalize_posix_path(raw: &str) -> String {
+    normalize_posix_path_with_visit(raw, |_| {})
+}
+
+/// True when `arg` names or traverses a path under one of `prefixes` (exact
+/// match or a `/`-bounded child). `~` expands only to the literal home marker
+/// the caller resolves; unresolved `~` never matches, so an unexpanded path
 /// cannot smuggle a credential write past the check by accident of form.
 fn path_under(arg: &str, prefixes: &[&str]) -> bool {
-    let normalized = normalize_posix_path(arg);
-    prefixes.iter().any(|prefix| {
-        if prefix.is_empty() {
-            return false;
+    let mut matched = false;
+    let _ = normalize_posix_path_with_visit(arg, |candidate| {
+        if matched {
+            return;
         }
-        normalized == *prefix
-            || normalized.starts_with(prefix) && normalized[prefix.len()..].starts_with('/')
-    })
+        matched = prefixes.iter().any(|prefix| {
+            !prefix.is_empty()
+                && (candidate == *prefix
+                    || candidate.starts_with(prefix) && candidate[prefix.len()..].starts_with('/'))
+        });
+    });
+    matched
 }
 
 /// Credential directories: writes here are identity material.
@@ -273,7 +291,8 @@ fn split_at_double_dash<'a>(args: &'a [&'a str]) -> (&'a [&'a str], &'a [&'a str
 }
 
 /// True when `args` (before `--`) carry a recursive flag (`-r`/`-R` in a short
-/// bundle or `--recursive` / `--recursive=*`).
+/// bundle or `--recursive` / `--recursive=*`, including unambiguous GNU long
+/// option abbreviations `--r`..`--recursive`).
 fn has_recursive_flag(args: &[&str]) -> bool {
     let (before_ddash, _) = split_at_double_dash(args);
     before_ddash.iter().any(|arg| {
@@ -281,17 +300,21 @@ fn has_recursive_flag(args: &[&str]) -> bool {
             if !bundle.starts_with('-') {
                 return bundle.contains('r') || bundle.contains('R');
             }
-            return *arg == "--recursive"
-                || arg
-                    .strip_prefix("--recursive=")
-                    .is_some_and(|val| !matches!(val, "never" | "no" | "false"));
+            let (opt_name, opt_val) = match arg.split_once('=') {
+                Some((name, val)) => (name, Some(val)),
+                None => (*arg, None),
+            };
+            if opt_name.len() >= 3 && "--recursive".starts_with(opt_name) {
+                return opt_val.is_none_or(|val| !matches!(val, "never" | "no" | "false"));
+            }
+            return false;
         }
         false
     })
 }
 
 /// True when `args` (before `--`) carry a force flag (`-f` in a short bundle or
-/// `--force`).
+/// `--force`, including unambiguous GNU long option abbreviations `--f`..`--force`).
 fn has_force_flag(args: &[&str]) -> bool {
     let (before_ddash, _) = split_at_double_dash(args);
     before_ddash.iter().any(|arg| {
@@ -299,7 +322,7 @@ fn has_force_flag(args: &[&str]) -> bool {
             if !bundle.starts_with('-') {
                 return bundle.contains('f');
             }
-            return *arg == "--force";
+            return arg.len() >= 3 && "--force".starts_with(*arg);
         }
         false
     })
@@ -328,8 +351,15 @@ pub fn classify_argv(argv: &[&str], stdin_piped: bool, intent: OperationIntent) 
     }
     if program == "dd" {
         let block_target = args.iter().any(|arg| {
-            arg.strip_prefix("of=")
-                .is_some_and(|target| normalize_posix_path(target).starts_with("/dev/"))
+            arg.strip_prefix("of=").is_some_and(|target| {
+                let mut hit = false;
+                let _ = normalize_posix_path_with_visit(target, |candidate| {
+                    if candidate.starts_with("/dev/") {
+                        hit = true;
+                    }
+                });
+                hit
+            })
         });
         if block_target {
             return RiskVerdict::Deny(HardDeny::BlockDeviceWrite);
@@ -393,10 +423,8 @@ pub fn classify_argv(argv: &[&str], stdin_piped: bool, intent: OperationIntent) 
 /// recognizes the portable `~` form so an unexpanded literal cannot dodge
 /// the check by accident of form.
 fn path_under_home(arg: &str, dir: &str) -> bool {
-    let normalized = normalize_posix_path(arg);
     let marked = ["~/", dir].concat();
-    normalized == marked
-        || normalized.starts_with(&marked) && normalized[marked.len()..].starts_with('/')
+    path_under(arg, &[marked.as_str()])
 }
 
 #[cfg(test)]
@@ -584,10 +612,38 @@ mod tests {
             ),
             RiskVerdict::Deny(HardDeny::BroadRootDelete)
         );
+        assert_eq!(
+            classify_argv(
+                &["rm", "--rec", "--forc", "/etc"],
+                false,
+                OperationIntent::Write
+            ),
+            RiskVerdict::Deny(HardDeny::BroadRootDelete)
+        );
         // Flags after `--` are positional operands, not flags.
         assert_eq!(
             classify_argv(&["rm", "--", "-rf", "/"], false, OperationIntent::Write),
             RiskVerdict::Allow(RiskTier::StateResetting)
+        );
+    }
+
+    #[test]
+    fn symlink_dot_dot_traversal_preserves_protected_path_denies() {
+        assert_eq!(
+            classify_argv(
+                &["tee", "/etc/link/../../passwd"],
+                false,
+                OperationIntent::Write
+            ),
+            RiskVerdict::Deny(HardDeny::SystemConfigWrite)
+        );
+        assert_eq!(
+            classify_argv(
+                &["tee", "~/.ssh/link/../../authorized_keys"],
+                false,
+                OperationIntent::Write
+            ),
+            RiskVerdict::Deny(HardDeny::CredentialDirWrite)
         );
     }
 }
