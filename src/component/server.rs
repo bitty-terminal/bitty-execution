@@ -1117,14 +1117,25 @@ impl<W: Write> FrameWriter<W> {
             stream,
             data: data.to_vec(),
         })?;
-        write_all(&mut state.writer, &frame)
+        let result = write_all(&mut state.writer, &frame);
+        if result.is_err() {
+            state.failed = true;
+        }
+        result
     }
 
     fn write_closing(&self, job: u64, message: &Message) -> io::Result<()> {
         let frame = encode(message)?;
         let mut state = lock(&self.state);
         mark_closed(&mut state, job);
-        write_all(&mut state.writer, &frame)
+        if state.failed {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "writer failed"));
+        }
+        let result = write_all(&mut state.writer, &frame);
+        if result.is_err() {
+            state.failed = true;
+        }
+        result
     }
 
     fn write_raw(&self, frame: &[u8]) -> io::Result<()> {
@@ -1132,7 +1143,11 @@ impl<W: Write> FrameWriter<W> {
         if state.failed {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "writer failed"));
         }
-        write_all(&mut state.writer, frame)
+        let result = write_all(&mut state.writer, frame);
+        if result.is_err() {
+            state.failed = true;
+        }
+        result
     }
 }
 
@@ -1299,5 +1314,32 @@ mod tests {
         gates.insert(7, 17);
         gates.remove(7);
         assert_eq!(resolver.join().expect("resolver joins"), None);
+    }
+
+    #[test]
+    fn write_failure_latches_failed_state_closed() {
+        struct FailingWriter;
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let writer = FrameWriter::new(FailingWriter);
+        assert!(writer.write_output(1, Stream::Stdout, b"hello").is_err());
+        assert!(
+            lock(&writer.state).failed,
+            "failed write_output must latch state.failed"
+        );
+        assert_eq!(
+            writer
+                .write_raw(&[1, 2, 3])
+                .expect_err("subsequent write must fail closed")
+                .kind(),
+            io::ErrorKind::BrokenPipe
+        );
     }
 }

@@ -157,16 +157,69 @@ fn program_basename(argv0: &str) -> &str {
     }
 }
 
+/// Normalizes a POSIX-style path for structural prefix/root matching.
+///
+/// Collapses duplicate slashes, removes `.` segments, resolves `..` segments
+/// within the root or `~` anchor, and strips trailing slashes (preserving `/`
+/// and `~`). This prevents trivial syntactic forms such as `/etc/`, `//`,
+/// `/etc/.`, or `/var/log/..` from bypassing [`BROAD_ROOTS`], [`path_under`],
+/// or [`path_under_home`].
+fn normalize_posix_path(raw: &str) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+    let is_abs = raw.starts_with('/');
+    let is_home = raw == "~" || raw.starts_with("~/");
+    let rest = if is_home {
+        raw.strip_prefix('~').unwrap_or("")
+    } else {
+        raw
+    };
+    let mut stack: Vec<&str> = Vec::new();
+    for part in rest.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if is_abs || is_home || stack.last().is_some_and(|last| *last != "..") {
+                    let _ = stack.pop();
+                } else {
+                    stack.push("..");
+                }
+            }
+            seg => stack.push(seg),
+        }
+    }
+    if is_home {
+        if stack.is_empty() {
+            "~".to_owned()
+        } else {
+            format!("~/{}", stack.join("/"))
+        }
+    } else if is_abs {
+        if stack.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{}", stack.join("/"))
+        }
+    } else if stack.is_empty() {
+        ".".to_owned()
+    } else {
+        stack.join("/")
+    }
+}
+
 /// True when `arg` names a path under one of `prefixes` (exact match or a
 /// `/`-bounded child). `~` expands only to the literal home marker the
 /// caller resolves; unresolved `~` never matches, so an unexpanded path
 /// cannot smuggle a credential write past the check by accident of form.
 fn path_under(arg: &str, prefixes: &[&str]) -> bool {
+    let normalized = normalize_posix_path(arg);
     prefixes.iter().any(|prefix| {
         if prefix.is_empty() {
             return false;
         }
-        *arg == **prefix || arg.starts_with(prefix) && arg[prefix.len()..].starts_with('/')
+        normalized == *prefix
+            || normalized.starts_with(prefix) && normalized[prefix.len()..].starts_with('/')
     })
 }
 
@@ -211,24 +264,37 @@ const READ_ONLY_GIT_SUBCOMMANDS: &[&str] =
 /// State-resetting `git` subcommands: notify and audit, still allowed.
 const STATE_RESETTING_GIT_SUBCOMMANDS: &[&str] = &["checkout", "clean", "reset", "restore"];
 
-/// True when `args` carry a recursive flag (`-r`/`-R` in a short bundle or
-/// `--recursive`).
+/// Splits `args` at the first `--` option-terminator into `(option_scan_slice, post_ddash_slice)`.
+fn split_at_double_dash<'a>(args: &'a [&'a str]) -> (&'a [&'a str], &'a [&'a str]) {
+    match args.iter().position(|arg| *arg == "--") {
+        Some(idx) => (&args[..idx], &args[idx + 1..]),
+        None => (args, &[]),
+    }
+}
+
+/// True when `args` (before `--`) carry a recursive flag (`-r`/`-R` in a short
+/// bundle or `--recursive` / `--recursive=*`).
 fn has_recursive_flag(args: &[&str]) -> bool {
-    args.iter().any(|arg| {
+    let (before_ddash, _) = split_at_double_dash(args);
+    before_ddash.iter().any(|arg| {
         if let Some(bundle) = arg.strip_prefix('-') {
             if !bundle.starts_with('-') {
                 return bundle.contains('r') || bundle.contains('R');
             }
-            return *arg == "--recursive";
+            return *arg == "--recursive"
+                || arg
+                    .strip_prefix("--recursive=")
+                    .is_some_and(|val| !matches!(val, "never" | "no" | "false"));
         }
         false
     })
 }
 
-/// True when `args` carry a force flag (`-f` in a short bundle or
+/// True when `args` (before `--`) carry a force flag (`-f` in a short bundle or
 /// `--force`).
 fn has_force_flag(args: &[&str]) -> bool {
-    args.iter().any(|arg| {
+    let (before_ddash, _) = split_at_double_dash(args);
+    before_ddash.iter().any(|arg| {
         if let Some(bundle) = arg.strip_prefix('-') {
             if !bundle.starts_with('-') {
                 return bundle.contains('f');
@@ -263,7 +329,7 @@ pub fn classify_argv(argv: &[&str], stdin_piped: bool, intent: OperationIntent) 
     if program == "dd" {
         let block_target = args.iter().any(|arg| {
             arg.strip_prefix("of=")
-                .is_some_and(|target| target.starts_with("/dev/"))
+                .is_some_and(|target| normalize_posix_path(target).starts_with("/dev/"))
         });
         if block_target {
             return RiskVerdict::Deny(HardDeny::BlockDeviceWrite);
@@ -272,9 +338,17 @@ pub fn classify_argv(argv: &[&str], stdin_piped: bool, intent: OperationIntent) 
     if program == "rm" {
         let recursive = has_recursive_flag(args);
         let force = has_force_flag(args);
-        let mut operands = args.iter().filter(|arg| !arg.starts_with('-'));
+        let (before_ddash, after_ddash) = split_at_double_dash(args);
+        let mut operands = before_ddash
+            .iter()
+            .copied()
+            .filter(|arg| *arg == "-" || !arg.starts_with('-'))
+            .chain(after_ddash.iter().copied());
         if recursive && force {
-            let broad = operands.any(|target| BROAD_ROOTS.contains(target));
+            let broad = operands.any(|target| {
+                let normalized = normalize_posix_path(target);
+                BROAD_ROOTS.contains(&normalized.as_str())
+            });
             if broad {
                 return RiskVerdict::Deny(HardDeny::BroadRootDelete);
             }
@@ -319,8 +393,10 @@ pub fn classify_argv(argv: &[&str], stdin_piped: bool, intent: OperationIntent) 
 /// recognizes the portable `~` form so an unexpanded literal cannot dodge
 /// the check by accident of form.
 fn path_under_home(arg: &str, dir: &str) -> bool {
+    let normalized = normalize_posix_path(arg);
     let marked = ["~/", dir].concat();
-    *arg == marked || arg.starts_with(&marked) && arg[marked.len()..].starts_with('/')
+    normalized == marked
+        || normalized.starts_with(&marked) && normalized[marked.len()..].starts_with('/')
 }
 
 #[cfg(test)]
@@ -489,5 +565,29 @@ mod tests {
         assert!(!RiskVerdict::Allow(RiskTier::Standard).requires_explicit_decision());
         assert!(RiskVerdict::NeedsConsent(RiskTier::Restricted).requires_explicit_decision());
         assert!(RiskVerdict::Deny(HardDeny::PipeToInterpreter).requires_explicit_decision());
+    }
+
+    #[test]
+    fn broad_root_delete_normalizes_trailing_slashes_and_dot_segments() {
+        for target in ["//", "/etc/", "/etc/.", "/var/log/..", "/usr///"] {
+            assert_eq!(
+                classify_argv(&["rm", "-rf", target], false, OperationIntent::Write),
+                RiskVerdict::Deny(HardDeny::BroadRootDelete),
+                "target {target:?} must be denied as BroadRootDelete"
+            );
+        }
+        assert_eq!(
+            classify_argv(
+                &["rm", "--recursive=always", "-f", "--", "/etc/"],
+                false,
+                OperationIntent::Write
+            ),
+            RiskVerdict::Deny(HardDeny::BroadRootDelete)
+        );
+        // Flags after `--` are positional operands, not flags.
+        assert_eq!(
+            classify_argv(&["rm", "--", "-rf", "/"], false, OperationIntent::Write),
+            RiskVerdict::Allow(RiskTier::StateResetting)
+        );
     }
 }
