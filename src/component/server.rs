@@ -272,6 +272,9 @@ where
                 break;
             }
         }
+        if writer.is_failed() {
+            break;
+        }
     }
 
     // Both the explicit Shutdown and a dropped host terminate every live job;
@@ -1068,6 +1071,10 @@ impl<W: Write + Send + 'static> OutputObserver for ComponentOutputObserver<W> {
 /// `write_all` plus flush. Output is rejected once a job's `Exit` frame has
 /// been written, so a drain that outlives the bounded join cannot place
 /// bytes after the terminal frame.
+/// Maximum buffered frame bytes across recoverable `WouldBlock` / `TimedOut`
+/// partial writes before the writer treats the connection as failed.
+const MAX_PENDING_WRITE_BYTES: usize = 4 * 1024 * 1024;
+
 struct FrameWriter<W> {
     state: Mutex<WriterState<W>>,
 }
@@ -1075,6 +1082,7 @@ struct FrameWriter<W> {
 struct WriterState<W> {
     writer: W,
     failed: bool,
+    pending: Vec<u8>,
     closed: BTreeSet<u64>,
     order: VecDeque<u64>,
 }
@@ -1085,10 +1093,15 @@ impl<W: Write> FrameWriter<W> {
             state: Mutex::new(WriterState {
                 writer,
                 failed: false,
+                pending: Vec::new(),
                 closed: BTreeSet::new(),
                 order: VecDeque::new(),
             }),
         }
+    }
+
+    fn is_failed(&self) -> bool {
+        lock(&self.state).failed
     }
 
     fn write(&self, message: &Message) -> io::Result<()> {
@@ -1117,14 +1130,17 @@ impl<W: Write> FrameWriter<W> {
             stream,
             data: data.to_vec(),
         })?;
-        write_all(&mut state.writer, &frame)
+        write_frame(&mut state, &frame, false)
     }
 
     fn write_closing(&self, job: u64, message: &Message) -> io::Result<()> {
         let frame = encode(message)?;
         let mut state = lock(&self.state);
         mark_closed(&mut state, job);
-        write_all(&mut state.writer, &frame)
+        if state.failed {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "writer failed"));
+        }
+        write_frame(&mut state, &frame, true)
     }
 
     fn write_raw(&self, frame: &[u8]) -> io::Result<()> {
@@ -1132,13 +1148,98 @@ impl<W: Write> FrameWriter<W> {
         if state.failed {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "writer failed"));
         }
-        write_all(&mut state.writer, frame)
+        write_frame(&mut state, frame, true)
     }
 }
 
-fn write_all<W: Write>(writer: &mut W, frame: &[u8]) -> io::Result<()> {
-    writer.write_all(frame)?;
-    writer.flush()
+fn is_recoverable_write_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
+}
+
+fn enqueue_pending<W>(state: &mut WriterState<W>, tail: &[u8]) -> bool {
+    if state.pending.len().saturating_add(tail.len()) > MAX_PENDING_WRITE_BYTES {
+        state.failed = true;
+        state.pending.clear();
+        return false;
+    }
+    state.pending.extend_from_slice(tail);
+    true
+}
+
+fn write_frame<W: Write>(
+    state: &mut WriterState<W>,
+    frame: &[u8],
+    retain_full_on_recoverable: bool,
+) -> io::Result<()> {
+    while !state.pending.is_empty() {
+        match state.writer.write(&state.pending) {
+            Ok(0) => {
+                state.failed = true;
+                state.pending.clear();
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write pending frame",
+                ));
+            }
+            Ok(n) => {
+                state.pending.drain(..n);
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) if is_recoverable_write_error(&e) => {
+                if retain_full_on_recoverable {
+                    let _ = enqueue_pending(state, frame);
+                }
+                return Err(e);
+            }
+            Err(e) => {
+                state.failed = true;
+                state.pending.clear();
+                return Err(e);
+            }
+        }
+    }
+
+    let mut written = 0;
+    while written < frame.len() {
+        match state.writer.write(&frame[written..]) {
+            Ok(0) => {
+                state.failed = true;
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write whole buffer",
+                ));
+            }
+            Ok(n) => {
+                written += n;
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) if is_recoverable_write_error(&e) => {
+                if written > 0 || retain_full_on_recoverable {
+                    let _ = enqueue_pending(state, &frame[written..]);
+                }
+                return Err(e);
+            }
+            Err(e) => {
+                state.failed = true;
+                return Err(e);
+            }
+        }
+    }
+
+    loop {
+        match state.writer.flush() {
+            Ok(()) => return Ok(()),
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) if is_recoverable_write_error(&e) => return Ok(()),
+            Err(e) => {
+                state.failed = true;
+                return Err(e);
+            }
+        }
+    }
 }
 
 fn encode(message: &Message) -> io::Result<Vec<u8>> {
@@ -1299,5 +1400,86 @@ mod tests {
         gates.insert(7, 17);
         gates.remove(7);
         assert_eq!(resolver.join().expect("resolver joins"), None);
+    }
+
+    #[test]
+    fn write_failure_latches_failed_state_closed() {
+        struct FailingWriter;
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let writer = FrameWriter::new(FailingWriter);
+        assert!(writer.write_output(1, Stream::Stdout, b"hello").is_err());
+        assert!(
+            lock(&writer.state).failed,
+            "failed write_output must latch state.failed"
+        );
+        assert_eq!(
+            writer
+                .write_raw(&[1, 2, 3])
+                .expect_err("subsequent write must fail closed")
+                .kind(),
+            io::ErrorKind::BrokenPipe
+        );
+    }
+
+    #[test]
+    fn would_block_preserves_frame_boundaries_and_delivers_closing_frames() {
+        struct FlakyWriter {
+            buf: Vec<u8>,
+            block_next: usize,
+        }
+        impl Write for FlakyWriter {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                if self.block_next > 0 {
+                    self.block_next -= 1;
+                    return Err(io::Error::new(io::ErrorKind::WouldBlock, "would block"));
+                }
+                self.buf.extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let writer = FrameWriter::new(FlakyWriter {
+            buf: Vec::new(),
+            block_next: 2,
+        });
+        assert_eq!(
+            writer
+                .write_output(1, Stream::Stdout, b"hello")
+                .expect_err("first attempt blocks")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(!writer.is_failed(), "WouldBlock must not latch failed");
+        assert_eq!(
+            writer
+                .write_closing(1, &Message::Started { job: 1 })
+                .expect_err("second attempt blocks")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        writer
+            .write(&Message::ShutdownAck)
+            .expect("third attempt flushes queued closing frame and ShutdownAck");
+        let bytes = lock(&writer.state).writer.buf.clone();
+        let mut reader = super::super::protocol::FrameReader::new(std::io::Cursor::new(bytes));
+        assert_eq!(
+            reader.read_message().expect("first frame"),
+            Some(Message::Started { job: 1 })
+        );
+        assert_eq!(
+            reader.read_message().expect("second frame"),
+            Some(Message::ShutdownAck)
+        );
     }
 }

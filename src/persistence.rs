@@ -51,7 +51,7 @@ use bitty_ipc::execution::{EnvPolicy, MAX_EXEC_ARGS, MAX_EXEC_ENV_VARS};
 use crate::atomic_file::{self, AtomicWrite};
 use crate::model::{JobId, JobIo, JobKind, JobLifetime, JobOrigin, JobSpec, JobState, JobTimeouts};
 use crate::outcome::{CancelEffect, DeadlineClock, ExecutionOutcome};
-use crate::output::{OutputIndex, OutputStream, ReadOutput};
+use crate::output::{MAX_OUTPUT_BYTES_PER_JOB, OutputIndex, OutputStream, ReadOutput};
 use crate::registry::DEFAULT_MAX_JOBS;
 use crate::{JobRegistry, MAX_READ_BYTES};
 
@@ -997,6 +997,32 @@ fn decode_row(line: &str) -> Result<PersistedJob, PersistError> {
     let stderr_dropped_bytes = parse_number("stderr dropped", fields.next("stderr dropped")?)?;
     let stdout_stored_bytes = parse_bounded("stdout stored", fields.next("stdout stored")?)?;
     let stderr_stored_bytes = parse_bounded("stderr stored", fields.next("stderr stored")?)?;
+    if stdout_stored_bytes > MAX_OUTPUT_BYTES_PER_JOB {
+        return Err(PersistError::corrupt(format!(
+            "manifest stdout stored bytes exceeds bound ({stdout_stored_bytes})"
+        )));
+    }
+    if stderr_stored_bytes > MAX_OUTPUT_BYTES_PER_JOB {
+        return Err(PersistError::corrupt(format!(
+            "manifest stderr stored bytes exceeds bound ({stderr_stored_bytes})"
+        )));
+    }
+    let expected_stdout_total = (stdout_stored_bytes as u64)
+        .checked_add(stdout_dropped_bytes)
+        .ok_or_else(|| PersistError::corrupt("manifest stdout byte totals overflow"))?;
+    if stdout_total_bytes != expected_stdout_total {
+        return Err(PersistError::corrupt(format!(
+            "manifest stdout total ({stdout_total_bytes}) != stored ({stdout_stored_bytes}) + dropped ({stdout_dropped_bytes})"
+        )));
+    }
+    let expected_stderr_total = (stderr_stored_bytes as u64)
+        .checked_add(stderr_dropped_bytes)
+        .ok_or_else(|| PersistError::corrupt("manifest stderr byte totals overflow"))?;
+    if stderr_total_bytes != expected_stderr_total {
+        return Err(PersistError::corrupt(format!(
+            "manifest stderr total ({stderr_total_bytes}) != stored ({stderr_stored_bytes}) + dropped ({stderr_dropped_bytes})"
+        )));
+    }
     let stdout_log = decode_optional_string(&mut fields, "stdout log")?;
     let stderr_log = decode_optional_string(&mut fields, "stderr log")?;
     fields.end()?;
@@ -1317,5 +1343,51 @@ mod tests {
         let reconciled = reconcile(&store);
         assert_eq!(reconciled[0].decision, ResumeDecision::UnknownOutcome);
         assert_eq!(reconciled[1].decision, ResumeDecision::TerminalFacts);
+    }
+
+    #[test]
+    fn decode_row_rejects_inconsistent_or_oversized_output_index() {
+        let mut row = PersistedJob {
+            id: JobId::from_raw(7).expect("id"),
+            state: JobState::Done(ExecutionOutcome::Success),
+            kind: JobKind::Command,
+            lifetime: JobLifetime::Task,
+            io: JobIo::Pipes,
+            program: "echo".to_owned(),
+            args: Vec::new(),
+            cwd: None,
+            env: EnvPolicy::Isolated,
+            hard_timeout_ms: None,
+            idle_timeout_ms: None,
+            retention_ms: None,
+            origin_panel: None,
+            started_at_ms: Some(1),
+            finished_at_ms: Some(2),
+            output: OutputIndex {
+                stdout_total_bytes: 10,
+                stdout_stored_bytes: 5,
+                stdout_dropped_bytes: 0,
+                stderr_total_bytes: 0,
+                stderr_stored_bytes: 0,
+                stderr_dropped_bytes: 0,
+            },
+            stdout_log: None,
+            stderr_log: None,
+        };
+        let mut encoded_mismatch = String::new();
+        encode_row(&row, &mut encoded_mismatch).expect("encode");
+        assert!(
+            decode_row(encoded_mismatch.trim_end_matches('\n')).is_err(),
+            "total != stored + dropped must fail decode_row"
+        );
+
+        row.output.stdout_stored_bytes = MAX_OUTPUT_BYTES_PER_JOB + 1;
+        row.output.stdout_total_bytes = (MAX_OUTPUT_BYTES_PER_JOB + 1) as u64;
+        let mut encoded_oversized = String::new();
+        encode_row(&row, &mut encoded_oversized).expect("encode");
+        assert!(
+            decode_row(encoded_oversized.trim_end_matches('\n')).is_err(),
+            "stored_bytes > MAX_OUTPUT_BYTES_PER_JOB must fail decode_row"
+        );
     }
 }
